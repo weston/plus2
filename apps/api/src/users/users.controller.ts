@@ -4,14 +4,20 @@ import {
   Patch,
   Put,
   Param,
+  Query,
   Body,
   UseGuards,
   Request,
+  Optional,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { UsersService } from './users.service';
 import { IsString, MinLength, MaxLength, Matches, IsNumber, IsOptional, IsObject, Min, Max, Length } from 'class-validator';
 import { MatchesService } from '../matches/matches.service';
+import { SoloService } from '../solo/solo.service';
+import type { PuzzleSize } from '@plus2/shared';
 
 class UpdateUsernameDto {
   @IsString()
@@ -45,6 +51,9 @@ export class UsersController {
   constructor(
     private usersService: UsersService,
     private matchesService: MatchesService,
+    @Optional()
+    @Inject(forwardRef(() => SoloService))
+    private soloService: SoloService,
   ) {}
 
   @Get('me')
@@ -111,13 +120,111 @@ export class UsersController {
   @Get(':id/matches')
   async getUserMatches(
     @Param('id') id: string,
-    @Param('page') page: number = 1,
+    @Query('page') page = 1,
   ) {
-    return this.matchesService.getUserMatches(id, page, 20);
+    return this.matchesService.getUserMatches(id, Number(page), 20);
   }
 
   @Get(':id/mmr-history')
   async getMmrHistory(@Param('id') id: string) {
     return this.usersService.getMmrHistory(id);
+  }
+
+  @Get(':id/ghost-recordings')
+  async getGhostRecordingCount(@Param('id') id: string) {
+    if (!this.soloService) {
+      return { count: 0 };
+    }
+    const count = await this.soloService.getUserGhostRecordingCount(id);
+    return { count };
+  }
+
+  @Get(':id/ghost-races')
+  async getUserGhostRaces(
+    @Param('id') id: string,
+    @Query('page') page = 1,
+  ) {
+    if (!this.soloService) {
+      return { races: [], total: 0 };
+    }
+
+    // Get races where user was the racer
+    const { races: asRacer } = await this.soloService.getUserGhostRaces(id, 1, 100);
+
+    // Get races where user's ghost was used
+    const { races: asGhost } = await this.soloService.getGhostRacesAgainstUser(id, 1, 100);
+
+    // Combine and format all races
+    const allRaces = [
+      ...asRacer.map((r) => ({
+        id: r.id,
+        type: 'ghost' as const,
+        role: 'racer' as const,
+        puzzleSize: r.puzzleSize,
+        opponent: r.ghostUser
+          ? { id: r.ghostUser.id, username: r.ghostUser.username }
+          : { id: r.ghostUserId, username: 'Unknown' },
+        myScore: r.racerScore,
+        opponentScore: r.ghostScore,
+        won: r.racerWon,
+        mmrBefore: r.racerMmrBefore,
+        mmrAfter: r.racerMmrAfter,
+        isOldGhost: r.isOldGhost,
+        createdAt: r.createdAt,
+      })),
+      ...asGhost.map((r) => ({
+        id: r.id,
+        type: 'ghost' as const,
+        role: 'ghost' as const,
+        puzzleSize: r.puzzleSize,
+        opponent: r.racer
+          ? { id: r.racer.id, username: r.racer.username }
+          : { id: r.racerId, username: 'Unknown' },
+        myScore: r.ghostScore,
+        opponentScore: r.racerScore,
+        won: !r.racerWon,
+        // Ghost creator's MMR change isn't tracked per-race, so we don't show it
+        mmrBefore: null,
+        mmrAfter: null,
+        isOldGhost: r.isOldGhost,
+        createdAt: r.createdAt,
+      })),
+    ];
+
+    // Sort by date descending
+    allRaces.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    // Paginate
+    const pageNum = Number(page);
+    const pageSize = 20;
+    const start = (pageNum - 1) * pageSize;
+    const paginatedRaces = allRaces.slice(start, start + pageSize);
+
+    return {
+      races: paginatedRaces,
+      total: allRaces.length,
+    };
+  }
+
+  @Get(':id/available-ghosts')
+  @UseGuards(JwtAuthGuard)
+  async getAvailableGhostsCount(
+    @Param('id') ghostUserId: string,
+    @Query('puzzleSize') puzzleSize: PuzzleSize = '3x3',
+    @Request() req: { user: { id: string } },
+  ) {
+    if (!this.soloService) {
+      return { count: 0 };
+    }
+    // Don't count if trying to race against own ghosts
+    if (req.user.id === ghostUserId) {
+      return { count: 0 };
+    }
+    const count = await this.soloService.getAvailableGhostCountFromUser(
+      req.user.id,
+      ghostUserId,
+      puzzleSize,
+    );
+    return { count };
   }
 }

@@ -7,6 +7,7 @@ import { LeagueBadge } from '@/components/LeagueBadge';
 import type { PuzzleSize, LeagueTier } from '@plus2/shared';
 
 const PUZZLE_SIZES: (PuzzleSize | 'global')[] = ['global', '2x2', '3x3', '4x4', '5x5'];
+const AVAILABLE_SIZES: (PuzzleSize | 'global')[] = ['global', '3x3'];
 
 interface LeaderboardEntry {
   rank: number;
@@ -62,22 +63,31 @@ export default function LeaderboardPage() {
 
         {/* Puzzle Filter */}
         <div className="flex gap-2 mb-6">
-          {PUZZLE_SIZES.map((size) => (
-            <button
-              key={size}
-              onClick={() => {
-                setSelectedPuzzle(size);
-                setPage(1);
-              }}
-              className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                selectedPuzzle === size
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-              }`}
-            >
-              {size === 'global' ? 'Global' : size}
-            </button>
-          ))}
+          {PUZZLE_SIZES.map((size) => {
+            const isAvailable = AVAILABLE_SIZES.includes(size);
+            return (
+              <button
+                key={size}
+                onClick={() => {
+                  if (isAvailable) {
+                    setSelectedPuzzle(size);
+                    setPage(1);
+                  }
+                }}
+                disabled={!isAvailable}
+                className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                  selectedPuzzle === size
+                    ? 'bg-blue-600 text-white'
+                    : isAvailable
+                      ? 'bg-gray-800 text-gray-400 hover:bg-gray-700'
+                      : 'bg-gray-800/50 text-gray-600 cursor-not-allowed'
+                }`}
+              >
+                {size === 'global' ? 'Global' : size}
+                {!isAvailable && <span className="text-xs ml-1">(Soon)</span>}
+              </button>
+            );
+          })}
         </div>
 
         {/* Leaderboard Table */}

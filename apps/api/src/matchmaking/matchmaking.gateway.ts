@@ -102,6 +102,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       inspectionTimer?: NodeJS.Timeout;
       solveTimeout?: NodeJS.Timeout;
       solveStartedAt?: number;
+      nextRoundTimer?: NodeJS.Timeout;
     }
   > = new Map();
 
@@ -231,6 +232,17 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (socket.userId) {
       this.matchmakingService.removeFromQueue(socket.userId);
       this.matchmakingService.deleteChallengeByCreator(socket.userId);
+    }
+
+    // Handle ghost race disconnect - treat as abandon (forfeit)
+    if (socket.ghostRaceId && socket.userId) {
+      // Call abandon handler to properly record the loss
+      this.handleGhostRaceAbandon(socket);
+    }
+
+    // Handle solo session disconnect - just abandon (no MMR impact)
+    if (socket.soloSessionId && socket.userId && this.soloService) {
+      this.handleSoloAbandon(socket);
     }
 
     // Handle match disconnect - notify opponent if they're still connected
@@ -825,7 +837,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   @SubscribeMessage('ghost_race_start')
   async handleGhostRaceStart(
     @ConnectedSocket() socket: AuthenticatedSocket,
-    @MessageBody() data: { puzzleSize: PuzzleSize },
+    @MessageBody() data: { puzzleSize: PuzzleSize; opponentId?: string },
   ) {
     if (!socket.userId) {
       socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Not authenticated' });
@@ -843,11 +855,16 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     }
 
     try {
-      // Find a ghost to race against
-      const ghostData = await this.soloService.findGhostToRace(socket.userId, data.puzzleSize);
+      // Find a ghost to race against (from specific user if opponentId provided)
+      const ghostData = data.opponentId
+        ? await this.soloService.findGhostFromUser(socket.userId, data.opponentId, data.puzzleSize)
+        : await this.soloService.findGhostToRace(socket.userId, data.puzzleSize);
 
       if (!ghostData) {
-        socket.emit('error', { code: 'NO_GHOSTS', message: 'No ghost opponents available. Try creating some ghost solves first!' });
+        const message = data.opponentId
+          ? 'No available ghosts from this player. You may have already raced all their ghosts!'
+          : 'No ghost opponents available. Try creating some ghost solves first!';
+        socket.emit('error', { code: 'NO_GHOSTS', message });
         return;
       }
 
@@ -957,26 +974,96 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (race.currentRound >= race.totalRounds) {
       await this.finishGhostRace(socket.ghostRaceId);
     } else {
-      // Start next round after delay
+      // Start next round after delay (can be skipped by user)
       const raceId = socket.ghostRaceId;
-      setTimeout(() => this.startGhostRaceRound(raceId), 3000);
+      race.nextRoundTimer = setTimeout(() => this.startGhostRaceRound(raceId), 3000);
+    }
+  }
+
+  @SubscribeMessage('ghost_race_skip')
+  async handleGhostRaceSkip(@ConnectedSocket() socket: AuthenticatedSocket) {
+    if (!socket.ghostRaceId || !socket.userId) return;
+
+    const race = this.activeGhostRaces.get(socket.ghostRaceId);
+    if (!race) return;
+
+    // Clear the next round timer and start immediately
+    if (race.nextRoundTimer) {
+      clearTimeout(race.nextRoundTimer);
+      race.nextRoundTimer = undefined;
+
+      if (race.currentRound < race.totalRounds) {
+        this.startGhostRaceRound(socket.ghostRaceId);
+      }
     }
   }
 
   @SubscribeMessage('ghost_race_abandon')
   async handleGhostRaceAbandon(@ConnectedSocket() socket: AuthenticatedSocket) {
-    if (!socket.ghostRaceId) return;
+    if (!socket.ghostRaceId || !this.soloService) return;
 
     const race = this.activeGhostRaces.get(socket.ghostRaceId);
-    if (race) {
-      if (race.inspectionTimer) clearTimeout(race.inspectionTimer);
-      if (race.solveTimeout) clearTimeout(race.solveTimeout);
+    if (!race) {
+      socket.ghostRaceId = undefined;
+      socket.emit('ghost_race_abandoned', {});
+      return;
     }
+
+    // Clear timers
+    if (race.inspectionTimer) clearTimeout(race.inspectionTimer);
+    if (race.solveTimeout) clearTimeout(race.solveTimeout);
+    if (race.nextRoundTimer) clearTimeout(race.nextRoundTimer);
+
+    // DNF all remaining rounds (user loses them all)
+    const completedRounds = race.userTimes.length;
+    for (let i = completedRounds; i < race.totalRounds; i++) {
+      race.userTimes.push(null); // DNF for each remaining round
+    }
+
+    // Calculate result as a loss (ghost wins all DNF'd rounds)
+    const result = await this.soloService.calculateGhostRaceResult(
+      race.oderId,
+      race.puzzleSize,
+      race.userTimes,
+      race.ghostTimes,
+      race.ghostMmrAtRecording,
+      race.ghostUserId,
+      race.isOldGhost,
+    );
+
+    // Save the ghost race to database (prevents replaying this ghost)
+    await this.soloService.saveGhostRace({
+      racerId: race.oderId,
+      ghostSessionId: race.ghostSessionId,
+      ghostUserId: race.ghostUserId,
+      puzzleSize: race.puzzleSize,
+      racerScore: result.userWins,
+      ghostScore: result.ghostWins,
+      racerWon: result.userWon,
+      racerMmrBefore: result.mmrBefore,
+      racerMmrAfter: result.newMmr,
+      racerLeagueAfter: result.newLeague as any,
+      ghostMmrAtRecording: race.ghostMmrAtRecording,
+      isOldGhost: race.isOldGhost,
+      racerTimes: race.userTimes,
+      ghostTimes: race.ghostTimes,
+    });
 
     this.activeGhostRaces.delete(socket.ghostRaceId);
     socket.ghostRaceId = undefined;
 
-    socket.emit('ghost_race_abandoned', {});
+    // Send the result to the user so they see the MMR change
+    socket.emit('ghost_race_end', {
+      userWins: result.userWins,
+      ghostWins: result.ghostWins,
+      userWon: result.userWon,
+      mmrDelta: result.mmrDelta,
+      newMmr: result.newMmr,
+      newLeague: result.newLeague,
+      ghostUsername: race.ghostUsername,
+      isOldGhost: race.isOldGhost,
+      abandoned: true,
+    });
   }
 
   private async startGhostRaceRound(raceId: string) {
@@ -1053,7 +1140,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (race.currentRound >= race.totalRounds) {
       await this.finishGhostRace(raceId);
     } else {
-      setTimeout(() => this.startGhostRaceRound(raceId), 3000);
+      race.nextRoundTimer = setTimeout(() => this.startGhostRaceRound(raceId), 3000);
     }
   }
 
@@ -1063,6 +1150,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     // Clear timers
     if (race.inspectionTimer) clearTimeout(race.inspectionTimer);
+    if (race.nextRoundTimer) clearTimeout(race.nextRoundTimer);
     if (race.solveTimeout) clearTimeout(race.solveTimeout);
 
     const result = await this.soloService.calculateGhostRaceResult(
@@ -1074,6 +1162,24 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       race.ghostUserId,
       race.isOldGhost,
     );
+
+    // Save the ghost race to database for history tracking
+    await this.soloService.saveGhostRace({
+      racerId: race.oderId,
+      ghostSessionId: race.ghostSessionId,
+      ghostUserId: race.ghostUserId,
+      puzzleSize: race.puzzleSize,
+      racerScore: result.userWins,
+      ghostScore: result.ghostWins,
+      racerWon: result.userWon,
+      racerMmrBefore: result.mmrBefore,
+      racerMmrAfter: result.newMmr,
+      racerLeagueAfter: result.newLeague as any,
+      ghostMmrAtRecording: race.ghostMmrAtRecording,
+      isOldGhost: race.isOldGhost,
+      racerTimes: race.userTimes,
+      ghostTimes: race.ghostTimes,
+    });
 
     const socket = this.findSocketByGhostRace(raceId);
     if (socket) {

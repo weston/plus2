@@ -21,12 +21,15 @@ import { SoloModule } from './solo/solo.module';
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
         const dbType = configService.get<string>('DB_TYPE', 'sqlite');
+        const isProd = configService.get('NODE_ENV') === 'production';
 
         if (dbType === 'sqlite') {
           return {
             type: 'better-sqlite3' as const,
             database: configService.get<string>('DB_DATABASE') || 'plus2.db',
             entities: [__dirname + '/**/*.entity{.ts,.js}'],
+            migrations: [__dirname + '/database/migrations/*{.ts,.js}'],
+            migrationsRun: true, // Auto-run migrations on startup
             synchronize: true,
             logging: configService.get('NODE_ENV') === 'development',
           };
@@ -40,8 +43,10 @@ import { SoloModule } from './solo/solo.module';
           password: configService.get<string>('DB_PASSWORD') || 'postgres',
           database: configService.get<string>('DB_DATABASE') || 'plus2',
           entities: [__dirname + '/**/*.entity{.ts,.js}'],
-          synchronize: configService.get('NODE_ENV') !== 'production',
-          logging: configService.get('NODE_ENV') === 'development',
+          migrations: [__dirname + '/database/migrations/*{.ts,.js}'],
+          migrationsRun: true, // Auto-run migrations on startup
+          synchronize: !isProd,
+          logging: !isProd,
         };
       },
     }),

@@ -86,7 +86,7 @@ export default function HomePage() {
             <h3 className="text-xl font-semibold mb-2">Custom Controls</h3>
             <p className="text-gray-400">
               Configure your keybindings to match your preferred solving style.
-              Support for 2x2 through 5x5 puzzles.
+              More puzzle sizes coming soon.
             </p>
           </div>
         </div>
@@ -95,14 +95,22 @@ export default function HomePage() {
         <div className="mt-16">
           <p className="text-gray-400 mb-4">Supported Puzzles</p>
           <div className="flex justify-center gap-4">
-            {['2x2', '3x3', '4x4', '5x5'].map((size) => (
-              <div
-                key={size}
-                className="w-16 h-16 flex items-center justify-center bg-gray-800 rounded-lg border border-gray-700 font-bold"
-              >
-                {size}
-              </div>
-            ))}
+            {['2x2', '3x3', '4x4', '5x5'].map((size) => {
+              const isAvailable = size === '3x3';
+              return (
+                <div
+                  key={size}
+                  className={`w-16 h-16 flex flex-col items-center justify-center rounded-lg border font-bold ${
+                    isAvailable
+                      ? 'bg-blue-600/20 border-blue-500 text-white'
+                      : 'bg-gray-800/50 border-gray-700 text-gray-500'
+                  }`}
+                >
+                  <span>{size}</span>
+                  {!isAvailable && <span className="text-[10px] text-gray-600">Soon</span>}
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>

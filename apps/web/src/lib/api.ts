@@ -158,6 +158,31 @@ export const usersApi = {
       }>;
       total: number;
     }>(`/users/${userId}/matches?page=${page}`),
+
+  getGhostRecordingCount: (userId: string) =>
+    request<{ count: number }>(`/users/${userId}/ghost-recordings`),
+
+  getAvailableGhostsCount: (token: string, ghostUserId: string, puzzleSize = '3x3') =>
+    request<{ count: number }>(`/users/${ghostUserId}/available-ghosts?puzzleSize=${puzzleSize}`, { token }),
+
+  getUserGhostRaces: (userId: string, page = 1) =>
+    request<{
+      races: Array<{
+        id: string;
+        type: 'ghost';
+        role: 'racer' | 'ghost';
+        puzzleSize: string;
+        opponent: { id: string; username: string };
+        myScore: number;
+        opponentScore: number;
+        won: boolean;
+        mmrBefore: number | null;
+        mmrAfter: number | null;
+        isOldGhost: boolean;
+        createdAt: string;
+      }>;
+      total: number;
+    }>(`/users/${userId}/ghost-races?page=${page}`),
 };
 
 // Keybindings API
@@ -277,6 +302,22 @@ export interface MatchDetail {
   solves: MatchSolve[];
 }
 
+// Ghost race type
+export interface GhostRace {
+  id: string;
+  type: 'ghost';
+  puzzleSize: string;
+  ghostUser: { id: string; username: string };
+  racerScore: number;
+  ghostScore: number;
+  racerWon: boolean;
+  racerMmrBefore: number;
+  racerMmrAfter: number;
+  ghostMmrAtRecording: number;
+  isOldGhost: boolean;
+  createdAt: string;
+}
+
 // Matches API
 export const matchesApi = {
   getHistory: (token: string, page = 1) =>
@@ -300,4 +341,12 @@ export const matchesApi = {
 
   getMatch: (id: string) =>
     request<MatchDetail>(`/matches/${id}`),
+
+  getGhostRaces: (token: string, page = 1) =>
+    request<{
+      races: GhostRace[];
+      total: number;
+      page: number;
+      pageSize: number;
+    }>(`/matches/ghost-races?page=${page}`, { token }),
 };

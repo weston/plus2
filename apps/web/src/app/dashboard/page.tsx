@@ -7,7 +7,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useGameStore } from '@/stores/game';
 import { useSocket } from '@/hooks/useSocket';
 import { LeagueBadge } from '@/components/LeagueBadge';
-import { usersApi } from '@/lib/api';
+import { usersApi, matchesApi, GhostRace } from '@/lib/api';
 import type { PuzzleSize, LeagueTier } from '@plus2/shared';
 
 const PUZZLE_SIZES: PuzzleSize[] = ['2x2', '3x3', '4x4', '5x5'];
@@ -29,6 +29,7 @@ export default function DashboardPage() {
   const { joinQueue, leaveQueue } = useSocket();
   const [stats, setStats] = useState<Stats[]>([]);
   const [selectedSize, setSelectedSize] = useState<PuzzleSize>('3x3');
+  const [ghostRaces, setGhostRaces] = useState<GhostRace[]>([]);
 
   // Redirect if not logged in (wait for hydration first)
   useEffect(() => {
@@ -37,12 +38,19 @@ export default function DashboardPage() {
     }
   }, [user, accessToken, router, _hasHydrated]);
 
-  // Load user stats
+  // Load user stats and ghost races
   useEffect(() => {
     if (!accessToken) return;
 
     usersApi.getMe(accessToken).then((data) => {
       setStats(data.stats as Stats[]);
+    });
+
+    matchesApi.getGhostRaces(accessToken).then((data) => {
+      setGhostRaces(data.races);
+    }).catch(() => {
+      // Ghost races API might not be available
+      setGhostRaces([]);
     });
   }, [accessToken]);
 
@@ -235,7 +243,55 @@ export default function DashboardPage() {
         {/* Recent Matches */}
         <div className="card mt-8">
           <h3 className="text-xl font-semibold mb-4">Recent Matches</h3>
-          <p className="text-gray-400">Match history will appear here</p>
+          {ghostRaces.length > 0 ? (
+            <div className="space-y-3">
+              {ghostRaces.slice(0, 5).map((race) => {
+                const mmrChange = race.racerMmrAfter - race.racerMmrBefore;
+                return (
+                  <div
+                    key={race.id}
+                    className={`p-3 rounded-lg border ${
+                      race.racerWon
+                        ? 'border-green-500/30 bg-green-500/10'
+                        : 'border-red-500/30 bg-red-500/10'
+                    }`}
+                  >
+                    <div className="flex justify-between items-center">
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs px-2 py-0.5 rounded bg-orange-600/30 text-orange-400">
+                          Ghost
+                        </span>
+                        <span className="text-sm text-gray-400">{race.puzzleSize}</span>
+                        <span className="font-medium">
+                          vs {race.ghostUser.username}
+                          {race.isOldGhost && (
+                            <span className="text-xs text-gray-500 ml-1">(old ghost)</span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <span className="font-mono">
+                          {race.racerScore} - {race.ghostScore}
+                        </span>
+                        <span
+                          className={`font-mono text-sm ${
+                            mmrChange >= 0 ? 'text-green-400' : 'text-red-400'
+                          }`}
+                        >
+                          {mmrChange >= 0 ? '+' : ''}{mmrChange} MMR
+                        </span>
+                        <span className="text-sm text-gray-500">
+                          {new Date(race.createdAt).toLocaleDateString()}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-gray-400">No matches yet. Play some ghost races to see them here!</p>
+          )}
         </div>
       </div>
     </div>

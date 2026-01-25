@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
 import { useGhostRaceSocket } from '@/hooks/useGhostRaceSocket';
@@ -26,6 +26,8 @@ function formatTime(ms: number | null): string {
 
 export default function GhostRacePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const opponentId = searchParams.get('opponent');
   const { user, accessToken, _hasHydrated } = useAuthStore();
   const race = useGhostRaceSocket();
 
@@ -224,7 +226,7 @@ export default function GhostRacePage() {
   }, [race.phase, handleStopTimer]);
 
   const handleStartRace = () => {
-    race.startRace(selectedSize);
+    race.startRace(selectedSize, opponentId || undefined);
   };
 
   const handlePlayAgain = () => {
@@ -298,7 +300,7 @@ export default function GhostRacePage() {
               onClick={handleStartRace}
               className="btn btn-primary w-full py-4 text-lg font-bold"
             >
-              Find Ghost Opponent
+              {opponentId ? 'Race Against This Player\'s Ghost' : 'Find Ghost Opponent'}
             </button>
           </div>
 
@@ -443,7 +445,15 @@ export default function GhostRacePage() {
                   </div>
                 </div>
               </div>
-              <div className="text-sm text-gray-500 mt-2">Next round starting...</div>
+              <div className="flex flex-col items-center gap-2 mt-3">
+                <button
+                  onClick={() => race.skipToNextRound()}
+                  className="btn btn-secondary px-6 py-2"
+                >
+                  Skip to Next Round
+                </button>
+                <div className="text-xs text-gray-500">or wait 3 seconds...</div>
+              </div>
             </>
           )}
           {race.phase === 'starting' && (

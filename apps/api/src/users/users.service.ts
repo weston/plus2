@@ -103,11 +103,16 @@ export class UsersService {
   }
 
   async getPuzzleStats(userId: string, puzzleSize: PuzzleSize): Promise<UserPuzzleStats> {
-    const stats = await this.statsRepository.findOne({
+    let stats = await this.statsRepository.findOne({
       where: { userId, puzzleSize },
     });
     if (!stats) {
-      throw new NotFoundException('Stats not found');
+      // Auto-create stats for users who don't have them yet
+      stats = this.statsRepository.create({
+        userId,
+        puzzleSize,
+      });
+      await this.statsRepository.save(stats);
     }
     return stats;
   }

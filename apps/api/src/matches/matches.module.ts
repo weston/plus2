@@ -6,12 +6,14 @@ import { Match } from './match.entity';
 import { Solve } from './solve.entity';
 import { UsersModule } from '../users/users.module';
 import { MatchmakingModule } from '../matchmaking/matchmaking.module';
+import { SoloModule } from '../solo/solo.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Match, Solve]),
     forwardRef(() => UsersModule),
     forwardRef(() => MatchmakingModule),
+    forwardRef(() => SoloModule),
   ],
   controllers: [MatchesController],
   providers: [MatchesService],

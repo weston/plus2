@@ -192,6 +192,7 @@ export function useGhostRaceSocket() {
       newLeague: LeagueTier;
       ghostUsername: string;
       isOldGhost: boolean;
+      abandoned?: boolean;
     }) => {
       setState((prev) => ({
         ...prev,
@@ -206,6 +207,7 @@ export function useGhostRaceSocket() {
       updateUser({ mmr: data.newMmr, league: data.newLeague });
     });
 
+    // Legacy handler - server now sends ghost_race_end with abandoned: true instead
     socket.on('ghost_race_abandoned', () => {
       setState(initialState);
     });
@@ -217,10 +219,10 @@ export function useGhostRaceSocket() {
   }, [accessToken, updateUser]);
 
   // Actions
-  const startRace = useCallback((size: PuzzleSize) => {
+  const startRace = useCallback((size: PuzzleSize, opponentId?: string) => {
     if (socketRef.current) {
       setState((prev) => ({ ...prev, error: null }));
-      socketRef.current.emit('ghost_race_start', { puzzleSize: size });
+      socketRef.current.emit('ghost_race_start', { puzzleSize: size, opponentId });
     }
   }, []);
 
@@ -247,6 +249,12 @@ export function useGhostRaceSocket() {
     }
   }, []);
 
+  const skipToNextRound = useCallback(() => {
+    if (socketRef.current) {
+      socketRef.current.emit('ghost_race_skip', {});
+    }
+  }, []);
+
   const reset = useCallback(() => {
     setState(initialState);
   }, []);
@@ -257,6 +265,7 @@ export function useGhostRaceSocket() {
     sendMove,
     sendComplete,
     abandonRace,
+    skipToNextRound,
     reset,
   };
 }

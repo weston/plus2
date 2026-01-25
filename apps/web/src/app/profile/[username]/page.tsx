@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { usersApi, UserProfile } from '@/lib/api';
 import { LeagueBadge } from '@/components/LeagueBadge';
 import { CountryFlag } from '@/components/CountryFlag';
+import { useAuthStore } from '@/stores/auth';
 import type { LeagueTier } from '@plus2/shared';
 
 interface MmrHistoryPoint {
@@ -16,6 +17,7 @@ interface MmrHistoryPoint {
 
 interface MatchHistoryItem {
   id: string;
+  type: 'pvp';
   puzzleSize: string;
   player1: { id: string; username: string };
   player2: { id: string; username: string };
@@ -30,6 +32,23 @@ interface MatchHistoryItem {
   createdAt: string;
   endedAt: string;
 }
+
+interface GhostRaceHistoryItem {
+  id: string;
+  type: 'ghost';
+  role: 'racer' | 'ghost';
+  puzzleSize: string;
+  opponent: { id: string; username: string };
+  myScore: number;
+  opponentScore: number;
+  won: boolean;
+  mmrBefore: number | null;
+  mmrAfter: number | null;
+  isOldGhost: boolean;
+  createdAt: string;
+}
+
+type HistoryItem = MatchHistoryItem | GhostRaceHistoryItem;
 
 function formatTime(ms: number | null): string {
   if (!ms) return '-';
@@ -97,10 +116,13 @@ function MmrChart({ history }: { history: MmrHistoryPoint[] }) {
 export default function ProfilePage() {
   const params = useParams();
   const username = params.username as string;
+  const { user, accessToken } = useAuthStore();
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [mmrHistory, setMmrHistory] = useState<MmrHistoryPoint[]>([]);
-  const [matches, setMatches] = useState<MatchHistoryItem[]>([]);
+  const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
+  const [ghostRecordingCount, setGhostRecordingCount] = useState(0);
+  const [availableGhostsCount, setAvailableGhostsCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -113,14 +135,30 @@ export default function ProfilePage() {
         const profileData = await usersApi.getProfileByUsername(username);
         setProfile(profileData);
 
-        // Load MMR history and matches
-        const [historyData, matchesData] = await Promise.all([
+        // Load MMR history, matches, ghost races, and ghost recording count
+        const [historyData, matchesData, ghostRacesData, ghostData] = await Promise.all([
           usersApi.getMmrHistory(profileData.id),
           usersApi.getUserMatches(profileData.id),
+          usersApi.getUserGhostRaces(profileData.id),
+          usersApi.getGhostRecordingCount(profileData.id),
         ]);
 
         setMmrHistory(historyData);
-        setMatches(matchesData.matches);
+        setGhostRecordingCount(ghostData.count);
+
+        // Combine matches and ghost races, then sort by date
+        const pvpMatches: HistoryItem[] = matchesData.matches.map(m => ({ ...m, type: 'pvp' as const }));
+        const ghostRaces: HistoryItem[] = ghostRacesData.races.map(r => ({ ...r, type: 'ghost' as const }));
+        const combined = [...pvpMatches, ...ghostRaces].sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+        setHistoryItems(combined);
+
+        // If logged in and viewing someone else's profile, check available ghosts
+        if (accessToken && user && user.id !== profileData.id) {
+          const availableData = await usersApi.getAvailableGhostsCount(accessToken, profileData.id);
+          setAvailableGhostsCount(availableData.count);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load profile');
       } finally {
@@ -131,7 +169,7 @@ export default function ProfilePage() {
     if (username) {
       loadProfile();
     }
-  }, [username]);
+  }, [username, accessToken, user]);
 
   if (loading) {
     return (
@@ -154,9 +192,10 @@ export default function ProfilePage() {
     );
   }
 
-  // Calculate totals
-  const totalGames = profile.stats.reduce((sum, s) => sum + s.gamesPlayed, 0);
-  const totalWins = profile.stats.reduce((sum, s) => sum + s.gamesWon, 0);
+  // Calculate totals (only 3x3 for now)
+  const stats3x3 = profile.stats.filter(s => s.puzzleSize === '3x3');
+  const totalGames = stats3x3.reduce((sum, s) => sum + s.gamesPlayed, 0);
+  const totalWins = stats3x3.reduce((sum, s) => sum + s.gamesWon, 0);
   const winRate = totalGames > 0 ? ((totalWins / totalGames) * 100).toFixed(1) : '0';
 
   return (
@@ -169,18 +208,30 @@ export default function ProfilePage() {
 
         {/* Profile Header */}
         <div className="card mb-6">
-          <div className="flex items-center gap-4 mb-4">
-            <CountryFlag country={profile.country} size="lg" />
-            <div>
-              <h1 className="text-3xl font-bold">{profile.username}</h1>
-              <div className="flex items-center gap-2 mt-1">
-                <LeagueBadge league={profile.league as LeagueTier} />
-                <span className="text-gray-400">{profile.mmr} MMR</span>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-4">
+              <CountryFlag country={profile.country} size="lg" />
+              <div>
+                <h1 className="text-3xl font-bold">{profile.username}</h1>
+                <div className="flex items-center gap-2 mt-1">
+                  <LeagueBadge league={profile.league as LeagueTier} />
+                  <span className="text-gray-400">{profile.mmr} MMR</span>
+                </div>
               </div>
             </div>
+
+            {/* Race Against Ghosts Button */}
+            {user && user.id !== profile.id && availableGhostsCount > 0 && (
+              <Link
+                href={`/solo/race?opponent=${profile.id}`}
+                className="px-4 py-2 bg-orange-600 hover:bg-orange-700 rounded-lg font-medium transition-all"
+              >
+                Race Ghost ({availableGhostsCount})
+              </Link>
+            )}
           </div>
 
-          <div className="grid grid-cols-3 gap-4 text-center">
+          <div className="grid grid-cols-4 gap-4 text-center">
             <div>
               <p className="text-2xl font-bold">{totalGames}</p>
               <p className="text-gray-400 text-sm">Games Played</p>
@@ -193,6 +244,10 @@ export default function ProfilePage() {
               <p className="text-2xl font-bold">{winRate}%</p>
               <p className="text-gray-400 text-sm">Win Rate</p>
             </div>
+            <div>
+              <p className="text-2xl font-bold text-orange-500">{ghostRecordingCount}</p>
+              <p className="text-gray-400 text-sm">Ghost Recordings</p>
+            </div>
           </div>
         </div>
 
@@ -200,39 +255,44 @@ export default function ProfilePage() {
         <div className="card mb-6">
           <h2 className="text-xl font-bold mb-4">Stats by Puzzle</h2>
           <div className="grid gap-4">
-            {profile.stats.length === 0 ? (
+            {profile.stats.filter(s => s.puzzleSize === '3x3').length === 0 ? (
               <p className="text-gray-400">No stats yet</p>
             ) : (
-              profile.stats.map((stat) => (
-                <div key={stat.id} className="bg-gray-800/50 rounded-lg p-4">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="font-bold text-lg">{stat.puzzleSize}</span>
-                    <div className="flex items-center gap-2">
-                      <LeagueBadge league={stat.league as LeagueTier} size="sm" />
-                      <span className="text-gray-400">{stat.mmr} MMR</span>
+              profile.stats
+                .filter((stat) => stat.puzzleSize === '3x3')
+                .map((stat) => (
+                  <div key={stat.id} className="bg-gray-800/50 rounded-lg p-4">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="font-bold text-lg">{stat.puzzleSize}</span>
+                      <div className="flex items-center gap-2">
+                        <LeagueBadge league={stat.league as LeagueTier} size="sm" />
+                        <span className="text-gray-400">{stat.mmr} MMR</span>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2 text-sm">
+                      <div>
+                        <p className="text-gray-400">Games</p>
+                        <p>{stat.gamesPlayed}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-400">Wins</p>
+                        <p className="text-green-500">{stat.gamesWon}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-400">Best Time</p>
+                        <p className="text-yellow-500">{formatTime(stat.bestTimeMs)}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-400">Avg Time</p>
+                        <p>{formatTime(stat.avgTimeMs)}</p>
+                      </div>
                     </div>
                   </div>
-                  <div className="grid grid-cols-4 gap-2 text-sm">
-                    <div>
-                      <p className="text-gray-400">Games</p>
-                      <p>{stat.gamesPlayed}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-400">Wins</p>
-                      <p className="text-green-500">{stat.gamesWon}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-400">Best Time</p>
-                      <p className="text-yellow-500">{formatTime(stat.bestTimeMs)}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-400">Avg Time</p>
-                      <p>{formatTime(stat.avgTimeMs)}</p>
-                    </div>
-                  </div>
-                </div>
-              ))
+                ))
             )}
+            <p className="text-gray-500 text-sm text-center mt-2">
+              More puzzle sizes (2x2, 4x4, 5x5) coming soon
+            </p>
           </div>
         </div>
 
@@ -245,60 +305,116 @@ export default function ProfilePage() {
         {/* Match History */}
         <div className="card">
           <h2 className="text-xl font-bold mb-4">Match History</h2>
-          {matches.length === 0 ? (
+          {historyItems.length === 0 ? (
             <p className="text-gray-400">No matches yet</p>
           ) : (
             <div className="space-y-2">
-              {matches.map((match) => {
-                const isPlayer1 = match.player1.id === profile.id;
-                const opponent = isPlayer1 ? match.player2 : match.player1;
-                const myScore = isPlayer1 ? match.player1Score : match.player2Score;
-                const oppScore = isPlayer1 ? match.player2Score : match.player1Score;
-                const won = match.winnerId === profile.id;
-                const mmrBefore = isPlayer1 ? match.player1MmrBefore : match.player2MmrBefore;
-                const mmrAfter = isPlayer1 ? match.player1MmrAfter : match.player2MmrAfter;
-                const mmrDelta = mmrAfter - mmrBefore;
+              {historyItems.map((item) => {
+                if (item.type === 'ghost') {
+                  // Ghost race
+                  const mmrDelta = item.mmrBefore !== null && item.mmrAfter !== null
+                    ? item.mmrAfter - item.mmrBefore
+                    : null;
+                  return (
+                    <div
+                      key={item.id}
+                      className={`flex items-center justify-between p-3 rounded-lg ${
+                        item.won ? 'bg-green-900/20 border border-green-800/30' : 'bg-red-900/20 border border-red-800/30'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className={`font-bold ${item.won ? 'text-green-500' : 'text-red-500'}`}>
+                          {item.won ? 'W' : 'L'}
+                        </span>
+                        <span className={`text-xs px-1.5 py-0.5 rounded ${
+                          item.role === 'racer'
+                            ? 'bg-orange-600/30 text-orange-400'
+                            : 'bg-purple-600/30 text-purple-400'
+                        }`}>
+                          {item.role === 'racer' ? 'vs Ghost' : 'Your Ghost'}
+                        </span>
+                        <span className="text-gray-400 text-sm">{item.puzzleSize}</span>
+                        <span>vs</span>
+                        <Link
+                          href={`/profile/${item.opponent.username}`}
+                          className="text-blue-400 hover:underline"
+                        >
+                          {item.opponent.username}
+                        </Link>
+                        {item.isOldGhost && (
+                          <span className="text-xs text-gray-500">(old)</span>
+                        )}
+                      </div>
 
-                return (
-                  <div
-                    key={match.id}
-                    className={`flex items-center justify-between p-3 rounded-lg ${
-                      won ? 'bg-green-900/20 border border-green-800/30' : 'bg-red-900/20 border border-red-800/30'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className={`font-bold ${won ? 'text-green-500' : 'text-red-500'}`}>
-                        {won ? 'W' : 'L'}
-                      </span>
-                      <span className="text-gray-400 text-sm">{match.puzzleSize}</span>
-                      <span>vs</span>
-                      <Link
-                        href={`/profile/${opponent.username}`}
-                        className="text-blue-400 hover:underline"
-                      >
-                        {opponent.username}
-                      </Link>
+                      <div className="flex items-center gap-4">
+                        <span className="font-mono">
+                          {item.myScore} - {item.opponentScore}
+                        </span>
+                        {mmrDelta !== null ? (
+                          <span className={`font-mono ${mmrDelta >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                            {mmrDelta >= 0 ? '+' : ''}{mmrDelta}
+                          </span>
+                        ) : (
+                          <span className="font-mono text-gray-500">-</span>
+                        )}
+                        <span className="text-gray-500 text-sm">
+                          {formatDate(item.createdAt)}
+                        </span>
+                      </div>
                     </div>
+                  );
+                } else {
+                  // PvP match
+                  const isPlayer1 = item.player1.id === profile.id;
+                  const opponent = isPlayer1 ? item.player2 : item.player1;
+                  const myScore = isPlayer1 ? item.player1Score : item.player2Score;
+                  const oppScore = isPlayer1 ? item.player2Score : item.player1Score;
+                  const won = item.winnerId === profile.id;
+                  const mmrBefore = isPlayer1 ? item.player1MmrBefore : item.player2MmrBefore;
+                  const mmrAfter = isPlayer1 ? item.player1MmrAfter : item.player2MmrAfter;
+                  const mmrDelta = mmrAfter - mmrBefore;
 
-                    <div className="flex items-center gap-4">
-                      <span className="font-mono">
-                        {myScore} - {oppScore}
-                      </span>
-                      <span className={`font-mono ${mmrDelta >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {mmrDelta >= 0 ? '+' : ''}{mmrDelta}
-                      </span>
-                      <span className="text-gray-500 text-sm">
-                        {formatDate(match.endedAt || match.createdAt)}
-                      </span>
-                      <Link
-                        href={`/match/${match.id}/replay`}
-                        className="text-blue-500 hover:text-blue-400 text-sm"
-                      >
-                        View
-                      </Link>
+                  return (
+                    <div
+                      key={item.id}
+                      className={`flex items-center justify-between p-3 rounded-lg ${
+                        won ? 'bg-green-900/20 border border-green-800/30' : 'bg-red-900/20 border border-red-800/30'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className={`font-bold ${won ? 'text-green-500' : 'text-red-500'}`}>
+                          {won ? 'W' : 'L'}
+                        </span>
+                        <span className="text-gray-400 text-sm">{item.puzzleSize}</span>
+                        <span>vs</span>
+                        <Link
+                          href={`/profile/${opponent.username}`}
+                          className="text-blue-400 hover:underline"
+                        >
+                          {opponent.username}
+                        </Link>
+                      </div>
+
+                      <div className="flex items-center gap-4">
+                        <span className="font-mono">
+                          {myScore} - {oppScore}
+                        </span>
+                        <span className={`font-mono ${mmrDelta >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                          {mmrDelta >= 0 ? '+' : ''}{mmrDelta}
+                        </span>
+                        <span className="text-gray-500 text-sm">
+                          {formatDate(item.endedAt || item.createdAt)}
+                        </span>
+                        <Link
+                          href={`/match/${item.id}/replay`}
+                          className="text-blue-500 hover:text-blue-400 text-sm"
+                        >
+                          View
+                        </Link>
+                      </div>
                     </div>
-                  </div>
-                );
+                  );
+                }
               })}
             </div>
           )}

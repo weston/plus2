@@ -3,12 +3,14 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan } from 'typeorm';
 import { SoloSession } from './solo-session.entity';
 import { SoloSolve } from './solo-solve.entity';
+import { GhostRace } from './ghost-race.entity';
 import { UsersService } from '../users/users.service';
 import {
   PuzzleSize,
   MoveRecord,
   SCRAMBLE_LENGTHS,
   getLeagueFromRating,
+  LeagueTier,
 } from '@plus2/shared';
 
 const ROUNDS_PER_SESSION = 5;
@@ -58,6 +60,8 @@ export class SoloService {
     private sessionRepository: Repository<SoloSession>,
     @InjectRepository(SoloSolve)
     private solveRepository: Repository<SoloSolve>,
+    @InjectRepository(GhostRace)
+    private ghostRaceRepository: Repository<GhostRace>,
     private usersService: UsersService,
   ) {}
 
@@ -227,17 +231,32 @@ export class SoloService {
   }
 
   // Get a random completed session to use as ghost opponent in matchmaking
+  // Excludes sessions the user has already played against
   async getRandomGhostSession(
     puzzleSize: PuzzleSize,
     excludeUserId: string,
     aroundMmr?: number,
   ): Promise<SoloSession | null> {
+    // Get IDs of ghost sessions this user has already played
+    const playedSessions = await this.ghostRaceRepository
+      .createQueryBuilder('race')
+      .select('race.ghostSessionId')
+      .where('race.racerId = :userId', { userId: excludeUserId })
+      .getRawMany();
+
+    const playedSessionIds = playedSessions.map(r => r.race_ghost_session_id);
+
     const query = this.sessionRepository
       .createQueryBuilder('session')
       .leftJoinAndSelect('session.solves', 'solves')
       .where('session.puzzleSize = :puzzleSize', { puzzleSize })
       .andWhere('session.status = :status', { status: 'completed' })
       .andWhere('session.userId != :excludeUserId', { excludeUserId });
+
+    // Exclude already-played ghost sessions
+    if (playedSessionIds.length > 0) {
+      query.andWhere('session.id NOT IN (:...playedSessionIds)', { playedSessionIds });
+    }
 
     // If MMR provided, try to find sessions from similar skill players
     if (aroundMmr !== undefined) {
@@ -266,6 +285,98 @@ export class SoloService {
     });
 
     return { sessions, total };
+  }
+
+  /**
+   * Get the count of ghost recordings for a user
+   */
+  async getUserGhostRecordingCount(userId: string): Promise<number> {
+    return this.sessionRepository.count({
+      where: { userId, status: 'completed' },
+    });
+  }
+
+  /**
+   * Get count of available (unplayed) ghost sessions from a specific user
+   */
+  async getAvailableGhostCountFromUser(
+    racerId: string,
+    ghostUserId: string,
+    puzzleSize: PuzzleSize,
+  ): Promise<number> {
+    // Get IDs of ghost sessions the racer has already played
+    const playedSessions = await this.ghostRaceRepository
+      .createQueryBuilder('race')
+      .select('race.ghostSessionId')
+      .where('race.racerId = :racerId', { racerId })
+      .getRawMany();
+
+    const playedSessionIds = playedSessions.map(r => r.race_ghost_session_id);
+
+    const query = this.sessionRepository
+      .createQueryBuilder('session')
+      .where('session.userId = :ghostUserId', { ghostUserId })
+      .andWhere('session.puzzleSize = :puzzleSize', { puzzleSize })
+      .andWhere('session.status = :status', { status: 'completed' });
+
+    if (playedSessionIds.length > 0) {
+      query.andWhere('session.id NOT IN (:...playedSessionIds)', { playedSessionIds });
+    }
+
+    return query.getCount();
+  }
+
+  /**
+   * Find a ghost session from a specific user to race against
+   */
+  async findGhostFromUser(
+    racerId: string,
+    ghostUserId: string,
+    puzzleSize: PuzzleSize,
+  ): Promise<{
+    ghostSession: SoloSession;
+    ghostUser: { id: string; username: string };
+    isOldGhost: boolean;
+  } | null> {
+    // Get IDs of ghost sessions the racer has already played
+    const playedSessions = await this.ghostRaceRepository
+      .createQueryBuilder('race')
+      .select('race.ghostSessionId')
+      .where('race.racerId = :racerId', { racerId })
+      .getRawMany();
+
+    const playedSessionIds = playedSessions.map(r => r.race_ghost_session_id);
+
+    const query = this.sessionRepository
+      .createQueryBuilder('session')
+      .leftJoinAndSelect('session.solves', 'solves')
+      .where('session.userId = :ghostUserId', { ghostUserId })
+      .andWhere('session.puzzleSize = :puzzleSize', { puzzleSize })
+      .andWhere('session.status = :status', { status: 'completed' });
+
+    if (playedSessionIds.length > 0) {
+      query.andWhere('session.id NOT IN (:...playedSessionIds)', { playedSessionIds });
+    }
+
+    const ghostSession = await query.orderBy('RANDOM()').take(1).getOne();
+
+    if (!ghostSession) {
+      return null;
+    }
+
+    const ghostUser = await this.usersService.findById(ghostUserId);
+    if (!ghostUser) {
+      return null;
+    }
+
+    const ghostAge = Date.now() - ghostSession.createdAt.getTime();
+    const isOldGhost = ghostAge > GHOST_AGE_LIMIT_MS;
+
+    return {
+      ghostSession,
+      ghostUser: { id: ghostUser.id, username: ghostUser.username },
+      isOldGhost,
+    };
   }
 
   // ============================================================================
@@ -341,6 +452,7 @@ export class SoloService {
     userWins: number;
     ghostWins: number;
     userWon: boolean;
+    mmrBefore: number;
     mmrDelta: number;
     newMmr: number;
     newLeague: string;
@@ -369,6 +481,7 @@ export class SoloService {
 
     const userWon = userWins > ghostWins;
     const userStats = await this.usersService.getPuzzleStats(oderId, puzzleSize);
+    const mmrBefore = userStats.mmr;
 
     // Calculate MMR change for racer using ELO formula
     // Racer ALWAYS gains/loses MMR regardless of ghost age
@@ -396,9 +509,71 @@ export class SoloService {
       userWins,
       ghostWins,
       userWon,
+      mmrBefore,
       mmrDelta,
       newMmr,
       newLeague,
     };
+  }
+
+  /**
+   * Save a completed ghost race to the database
+   */
+  async saveGhostRace(data: {
+    racerId: string;
+    ghostSessionId: string;
+    ghostUserId: string;
+    puzzleSize: PuzzleSize;
+    racerScore: number;
+    ghostScore: number;
+    racerWon: boolean;
+    racerMmrBefore: number;
+    racerMmrAfter: number;
+    racerLeagueAfter: LeagueTier;
+    ghostMmrAtRecording: number;
+    isOldGhost: boolean;
+    racerTimes: (number | null)[];
+    ghostTimes: (number | null)[];
+  }): Promise<GhostRace> {
+    const ghostRace = this.ghostRaceRepository.create(data);
+    return this.ghostRaceRepository.save(ghostRace);
+  }
+
+  /**
+   * Get a user's ghost race history (for Recent Matches display)
+   */
+  async getUserGhostRaces(
+    userId: string,
+    page = 1,
+    limit = 20,
+  ): Promise<{ races: GhostRace[]; total: number }> {
+    const [races, total] = await this.ghostRaceRepository.findAndCount({
+      where: { racerId: userId },
+      relations: ['ghostUser'],
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+
+    return { races, total };
+  }
+
+  /**
+   * Get ghost races where the user's ghost was used (others racing against their recordings)
+   */
+  async getGhostRacesAgainstUser(
+    userId: string,
+    page = 1,
+    limit = 20,
+  ): Promise<{ races: GhostRace[]; total: number }> {
+    const [races, total] = await this.ghostRaceRepository.findAndCount({
+      where: { ghostUserId: userId },
+      relations: ['racer'],
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+
+    return { races, total };
   }
 }
