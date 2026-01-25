@@ -150,13 +150,25 @@ resource "aws_ecs_service" "api" {
   # Allow service to be updated without force new resource
   force_new_deployment = true
 
+  # Zero-downtime deployment settings:
+  # - minimum_healthy_percent = 100 ensures at least 1 container stays running
+  # - maximum_percent = 200 allows spinning up new container before killing old
   deployment_maximum_percent         = 200
-  deployment_minimum_healthy_percent = 50
+  deployment_minimum_healthy_percent = 100
+
+  # Circuit breaker to auto-rollback failed deployments
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
 
   # Ignore changes to desired_count for autoscaling
   lifecycle {
     ignore_changes = [desired_count]
   }
+
+  # Wait for new task to be healthy before considering deployment complete
+  wait_for_steady_state = true
 
   depends_on = [aws_lb_listener.http]
 

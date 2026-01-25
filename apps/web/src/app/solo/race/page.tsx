@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { Suspense, useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
@@ -24,7 +24,16 @@ function formatTime(ms: number | null): string {
   return seconds.toFixed(2) + 's';
 }
 
+// Wrapper component to handle Suspense boundary for useSearchParams
 export default function GhostRacePage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center"><p className="text-gray-400">Loading...</p></div>}>
+      <GhostRaceContent />
+    </Suspense>
+  );
+}
+
+function GhostRaceContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const opponentId = searchParams.get('opponent');

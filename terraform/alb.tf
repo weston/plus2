@@ -22,12 +22,16 @@ resource "aws_lb_target_group" "api" {
   vpc_id      = aws_vpc.main.id
   target_type = "ip"
 
+  # Faster deregistration for quicker deployments (default is 300s)
+  # This allows the old container to be removed faster after new one is healthy
+  deregistration_delay = 30
+
   health_check {
     enabled             = true
     healthy_threshold   = 2
     unhealthy_threshold = 3
     timeout             = 5
-    interval            = 30
+    interval            = 15  # Check more frequently for faster health detection
     path                = "/health"
     matcher             = "200"
   }
