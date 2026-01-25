@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 15, 23, 42;
+  --background-end-rgb: 30, 41, 59;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--background-start-rgb)),
+    rgb(var(--background-end-rgb))
+  );
+  min-height: 100vh;
+}
+
+/* League badge colors */
+.league-bronze { @apply bg-[#CD7F32] text-black; }
+.league-silver { @apply bg-[#C0C0C0] text-black; }
+.league-gold { @apply bg-[#FFD700] text-black; }
+.league-platinum { @apply bg-[#E5E4E2] text-black; }
+.league-diamond { @apply bg-[#B9F2FF] text-black; }
+.league-master { @apply bg-[#FF6B6B] text-white; }
+.league-grandmaster { @apply bg-[#9B59B6] text-white; }
+
+/* Timer styling */
+.timer {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Cube container */
+.cube-container {
+  @apply relative rounded-lg overflow-hidden;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* Scramble text */
+.scramble-text {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  @apply text-lg tracking-wide;
+}
+
+/* Button styles */
+.btn {
+  @apply px-4 py-2 rounded-lg font-semibold transition-all duration-200;
+}
+
+.btn-primary {
+  @apply bg-blue-600 hover:bg-blue-700 text-white;
+}
+
+.btn-secondary {
+  @apply bg-gray-600 hover:bg-gray-700 text-white;
+}
+
+.btn-success {
+  @apply bg-green-600 hover:bg-green-700 text-white;
+}
+
+.btn-danger {
+  @apply bg-red-600 hover:bg-red-700 text-white;
+}
+
+/* Input styles */
+.input {
+  @apply w-full px-4 py-2 rounded-lg bg-gray-800 border border-gray-700
+         text-white placeholder-gray-400 focus:outline-none focus:border-blue-500
+         focus:ring-1 focus:ring-blue-500;
+}
+
+/* Card styles */
+.card {
+  @apply bg-gray-800/50 backdrop-blur-sm rounded-xl p-6 border border-gray-700/50;
+}
+
+/* Keybinding key display */
+.key-badge {
+  @apply inline-flex items-center justify-center min-w-[2rem] h-8 px-2
+         bg-gray-700 rounded border border-gray-600 font-mono text-sm;
+}
