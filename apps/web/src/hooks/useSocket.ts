@@ -110,8 +110,23 @@ export function useSocket() {
     });
 
     // Match events
-    socket.on('match_found', (data: ServerEvents['match_found']) => {
-      startMatch(data.matchId, data.opponent);
+    socket.on('match_found', (data: ServerEvents['match_found'] & {
+      opponent: {
+        id: string;
+        username: string;
+        mmr: number;
+        league: string;
+        country?: string | null;
+        gamesPlayed?: number;
+        gamesWon?: number;
+      };
+    }) => {
+      startMatch(data.matchId, {
+        ...data.opponent,
+        country: data.opponent.country || null,
+        gamesPlayed: data.opponent.gamesPlayed || 0,
+        gamesWon: data.opponent.gamesWon || 0,
+      });
     });
 
     socket.on('round_start', (data: ServerEvents['round_start'] & {

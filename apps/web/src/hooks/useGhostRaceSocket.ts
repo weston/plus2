@@ -31,6 +31,10 @@ export interface GhostRaceState {
   ghostMoves: MoveRecord[];
   ghostTime: number | null;
   ghostInspectionStartAt: number; // Original inspection start timestamp for timing
+  // Extended ghost info
+  ghostCountry: string | null;
+  ghostGamesPlayed: number;
+  ghostGamesWon: number;
   // Round results
   lastUserTime: number | null;
   lastGhostTime: number | null;
@@ -60,6 +64,10 @@ const initialState: GhostRaceState = {
   ghostMoves: [],
   ghostTime: null,
   ghostInspectionStartAt: 0,
+  // Extended ghost info
+  ghostCountry: null,
+  ghostGamesPlayed: 0,
+  ghostGamesWon: 0,
   lastUserTime: null,
   lastGhostTime: null,
   lastUserWonRound: null,
@@ -106,6 +114,9 @@ export function useGhostRaceSocket() {
       ghostUsername: string;
       ghostMmr: number;
       isOldGhost: boolean;
+      ghostCountry?: string | null;
+      ghostGamesPlayed?: number;
+      ghostGamesWon?: number;
     }) => {
       setState((prev) => ({
         ...prev,
@@ -116,6 +127,9 @@ export function useGhostRaceSocket() {
         ghostUsername: data.ghostUsername,
         ghostMmr: data.ghostMmr,
         isOldGhost: data.isOldGhost,
+        ghostCountry: data.ghostCountry || null,
+        ghostGamesPlayed: data.ghostGamesPlayed || 0,
+        ghostGamesWon: data.ghostGamesWon || 0,
         userWins: 0,
         ghostWins: 0,
         error: null,

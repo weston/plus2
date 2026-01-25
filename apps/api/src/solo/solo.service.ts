@@ -333,7 +333,7 @@ export class SoloService {
     puzzleSize: PuzzleSize,
   ): Promise<{
     ghostSession: SoloSession;
-    ghostUser: { id: string; username: string };
+    ghostUser: { id: string; username: string; country: string | null; gamesPlayed: number; gamesWon: number };
     isOldGhost: boolean;
   } | null> {
     // Get IDs of ghost sessions the racer has already played
@@ -366,12 +366,21 @@ export class SoloService {
       return null;
     }
 
+    // Get ghost user's stats for this puzzle size
+    const ghostStats = await this.usersService.getPuzzleStats(ghostUserId, puzzleSize);
+
     const ghostAge = Date.now() - ghostSession.createdAt.getTime();
     const isOldGhost = ghostAge > GHOST_AGE_LIMIT_MS;
 
     return {
       ghostSession,
-      ghostUser: { id: ghostUser.id, username: ghostUser.username },
+      ghostUser: {
+        id: ghostUser.id,
+        username: ghostUser.username,
+        country: ghostUser.country || null,
+        gamesPlayed: ghostStats?.gamesPlayed || 0,
+        gamesWon: ghostStats?.gamesWon || 0,
+      },
       isOldGhost,
     };
   }
@@ -388,7 +397,7 @@ export class SoloService {
     puzzleSize: PuzzleSize,
   ): Promise<{
     ghostSession: SoloSession;
-    ghostUser: { id: string; username: string };
+    ghostUser: { id: string; username: string; country: string | null; gamesPlayed: number; gamesWon: number };
     isOldGhost: boolean;
   } | null> {
     const userStats = await this.usersService.getPuzzleStats(userId, puzzleSize);
@@ -411,13 +420,22 @@ export class SoloService {
       return null;
     }
 
+    // Get ghost user's stats for this puzzle size
+    const ghostStats = await this.usersService.getPuzzleStats(ghostSession.userId, puzzleSize);
+
     // Check if ghost is old (more than 1 week)
     const ghostAge = Date.now() - ghostSession.createdAt.getTime();
     const isOldGhost = ghostAge > GHOST_AGE_LIMIT_MS;
 
     return {
       ghostSession,
-      ghostUser: { id: ghostUser.id, username: ghostUser.username },
+      ghostUser: {
+        id: ghostUser.id,
+        username: ghostUser.username,
+        country: ghostUser.country || null,
+        gamesPlayed: ghostStats?.gamesPlayed || 0,
+        gamesWon: ghostStats?.gamesWon || 0,
+      },
       isOldGhost,
     };
   }

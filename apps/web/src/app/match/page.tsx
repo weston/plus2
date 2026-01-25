@@ -9,6 +9,7 @@ import { useKeybindings } from '@/hooks/useKeybindings';
 import { TwistyCube, TwistyCubeHandle } from '@/components/TwistyCube';
 import { Timer } from '@/components/Timer';
 import { LeagueBadge } from '@/components/LeagueBadge';
+import { CountryFlag } from '@/components/CountryFlag';
 import { INSPECTION_DURATION_MS } from '@plus2/shared';
 
 // Rotation moves don't start the solve timer
@@ -295,12 +296,24 @@ export default function MatchPage() {
 
           {/* Opponent Cube */}
           <div className="card">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
+                {opponent.country && <CountryFlag country={opponent.country} size="md" />}
                 <span className="font-bold">{opponent.username}</span>
                 <LeagueBadge league={opponent.league} size="sm" />
               </div>
               <span className="text-gray-400">{opponent.mmr} MMR</span>
+            </div>
+            <div className="text-xs text-gray-500 mb-4">
+              {opponent.gamesPlayed > 0 ? (
+                <span>
+                  {opponent.gamesWon}W - {opponent.gamesPlayed - opponent.gamesWon}L
+                  {' '}
+                  ({Math.round((opponent.gamesWon / opponent.gamesPlayed) * 100)}% WR)
+                </span>
+              ) : (
+                <span>No games played</span>
+              )}
             </div>
 
             <TwistyCube

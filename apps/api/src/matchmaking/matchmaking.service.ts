@@ -20,6 +20,10 @@ export interface QueueEntry {
   joinedAt: number;
   username: string;
   league: string;
+  // Extended opponent info
+  country: string | null;
+  gamesPlayed: number;
+  gamesWon: number;
 }
 
 export interface Challenge {
@@ -31,6 +35,10 @@ export interface Challenge {
   creatorUsername: string;
   creatorMmr: number;
   creatorLeague: string;
+  // Extended opponent info
+  creatorCountry: string | null;
+  creatorGamesPlayed: number;
+  creatorGamesWon: number;
 }
 
 @Injectable()
@@ -79,6 +87,10 @@ export class MatchmakingService {
       joinedAt: Date.now(),
       username: user.username,
       league: user.league,
+      // Extended opponent info
+      country: user.country || null,
+      gamesPlayed: stats?.gamesPlayed || 0,
+      gamesWon: stats?.gamesWon || 0,
     };
 
     queue.set(userId, entry);
@@ -205,6 +217,10 @@ export class MatchmakingService {
       creatorUsername: user.username,
       creatorMmr: stats?.mmr || 1000,
       creatorLeague: user.league,
+      // Extended opponent info
+      creatorCountry: user.country || null,
+      creatorGamesPlayed: stats?.gamesPlayed || 0,
+      creatorGamesWon: stats?.gamesWon || 0,
     };
 
     this.challenges.set(code, challenge);

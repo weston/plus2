@@ -1,5 +1,7 @@
 'use client';
 
+/* eslint-disable @next/next/no-img-element */
+
 interface CountryFlagProps {
   country?: string | null;
   size?: 'sm' | 'md' | 'lg';
@@ -61,27 +63,35 @@ export const COUNTRIES = [
   { code: 'GR', name: 'Greece' },
 ].sort((a, b) => a.name.localeCompare(b.name));
 
-// Convert country code to flag emoji
-function countryCodeToEmoji(code: string): string {
-  const codePoints = code
-    .toUpperCase()
-    .split('')
-    .map((char) => 127397 + char.charCodeAt(0));
-  return String.fromCodePoint(...codePoints);
-}
+// Size configurations for flag images
+// flagcdn supports: w20, w40, w80, w160, w320, w640
+const SIZE_CONFIG = {
+  sm: { width: 16, height: 12, cdnWidth: 20 },
+  md: { width: 20, height: 15, cdnWidth: 40 },
+  lg: { width: 28, height: 21, cdnWidth: 40 },
+};
 
 export function CountryFlag({ country, size = 'md', className = '' }: CountryFlagProps) {
   if (!country) return null;
 
-  const sizeClass = {
-    sm: 'text-sm',
-    md: 'text-lg',
-    lg: 'text-2xl',
-  }[size];
+  const countryLower = country.toLowerCase();
+  const countryName = COUNTRIES.find(c => c.code === country.toUpperCase())?.name || country.toUpperCase();
+  const { width, height, cdnWidth } = SIZE_CONFIG[size];
+
+  // Use flagcdn.com for flag images (free, no API key needed)
+  // flagcdn only supports specific widths: 20, 40, 80, 160, 320, 640
+  const flagUrl = `https://flagcdn.com/w${cdnWidth}/${countryLower}.png`;
 
   return (
-    <span className={`${sizeClass} ${className}`} title={COUNTRIES.find(c => c.code === country)?.name || country}>
-      {countryCodeToEmoji(country)}
-    </span>
+    <img
+      src={flagUrl}
+      alt={countryName}
+      title={countryName}
+      width={width}
+      height={height}
+      className={`inline-block ${className}`}
+      style={{ objectFit: 'cover' }}
+      loading="lazy"
+    />
   );
 }

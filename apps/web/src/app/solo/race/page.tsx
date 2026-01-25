@@ -8,6 +8,7 @@ import { useGhostRaceSocket } from '@/hooks/useGhostRaceSocket';
 import { useKeybindings } from '@/hooks/useKeybindings';
 import { TwistyCube, TwistyCubeHandle } from '@/components/TwistyCube';
 import { LeagueBadge } from '@/components/LeagueBadge';
+import { CountryFlag } from '@/components/CountryFlag';
 import type { PuzzleSize } from '@plus2/shared';
 
 const PUZZLE_SIZES: PuzzleSize[] = ['2x2', '3x3', '4x4', '5x5'];
@@ -389,8 +390,18 @@ function GhostRaceContent() {
             Abandon
           </button>
           <div className="text-center">
-            <div className="text-sm text-gray-400">
-              Racing vs {race.ghostUsername}'s Ghost ({race.ghostMmr} MMR)
+            <div className="text-sm text-gray-400 flex items-center justify-center gap-2">
+              Racing vs
+              {race.ghostCountry && <CountryFlag country={race.ghostCountry} size="sm" />}
+              <span>{race.ghostUsername}'s Ghost</span>
+              <span>({race.ghostMmr} MMR)</span>
+            </div>
+            <div className="text-xs text-gray-500">
+              {race.ghostGamesPlayed > 0 ? (
+                <span>
+                  {race.ghostGamesWon}W - {race.ghostGamesPlayed - race.ghostGamesWon}L
+                </span>
+              ) : null}
             </div>
             {race.isOldGhost && (
               <div className="text-xs text-yellow-500">Old ghost - creator's MMR not affected</div>

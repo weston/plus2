@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { leaderboardApi } from '@/lib/api';
 import { LeagueBadge } from '@/components/LeagueBadge';
+import { CountryFlag } from '@/components/CountryFlag';
 import type { PuzzleSize, LeagueTier } from '@plus2/shared';
 
 const PUZZLE_SIZES: (PuzzleSize | 'global')[] = ['global', '2x2', '3x3', '4x4', '5x5'];
@@ -15,6 +16,7 @@ interface LeaderboardEntry {
   username: string;
   mmr: number;
   league: LeagueTier;
+  country?: string | null;
   gamesPlayed: number;
   gamesWon: number;
   winRate: number;
@@ -133,8 +135,9 @@ export default function LeaderboardPage() {
                     <td className="p-4">
                       <Link
                         href={`/profile/${entry.username}`}
-                        className="hover:text-blue-500"
+                        className="hover:text-blue-500 inline-flex items-center gap-2"
                       >
+                        {entry.country && <CountryFlag country={entry.country} size="sm" />}
                         {entry.username}
                       </Link>
                     </td>

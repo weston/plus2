@@ -26,6 +26,7 @@ export class LeaderboardService {
         'user.username',
         'user.mmr',
         'user.league',
+        'user.country',
       ])
       .orderBy('user.mmr', 'DESC');
 
@@ -53,7 +54,7 @@ export class LeaderboardService {
       statsMap.get(stat.userId)!.push(stat);
     }
 
-    const entries: LeaderboardEntry[] = users.map((user, index) => {
+    const entries: (LeaderboardEntry & { country?: string | null })[] = users.map((user, index) => {
       const userStats = statsMap.get(user.id) || [];
       const totalGamesPlayed = userStats.reduce((sum, s) => sum + s.gamesPlayed, 0);
       const totalGamesWon = userStats.reduce((sum, s) => sum + s.gamesWon, 0);
@@ -67,6 +68,7 @@ export class LeaderboardService {
         username: user.username,
         mmr: user.mmr,
         league: user.league,
+        country: user.country || null,
         gamesPlayed: totalGamesPlayed,
         gamesWon: totalGamesWon,
         winRate: totalGamesPlayed > 0 ? totalGamesWon / totalGamesPlayed : 0,
@@ -98,12 +100,13 @@ export class LeaderboardService {
       .take(limit)
       .getManyAndCount();
 
-    const entries: LeaderboardEntry[] = stats.map((stat, index) => ({
+    const entries: (LeaderboardEntry & { country?: string | null })[] = stats.map((stat, index) => ({
       rank: (page - 1) * limit + index + 1,
       userId: stat.user.id,
       username: stat.user.username,
       mmr: stat.mmr,
       league: stat.league,
+      country: stat.user.country || null,
       gamesPlayed: stat.gamesPlayed,
       gamesWon: stat.gamesWon,
       winRate: stat.gamesPlayed > 0 ? stat.gamesWon / stat.gamesPlayed : 0,

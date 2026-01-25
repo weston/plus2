@@ -614,6 +614,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       joinedAt: challenge.createdAt,
       username: challenge.creatorUsername,
       league: challenge.creatorLeague,
+      // Extended opponent info
+      country: challenge.creatorCountry,
+      gamesPlayed: challenge.creatorGamesPlayed,
+      gamesWon: challenge.creatorGamesWon,
     };
 
     await this.createMatch(creatorEntry, joinerStats.entry, challenge.puzzleSize);
@@ -937,6 +941,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         ghostUsername: ghostUser.username,
         ghostMmr: ghostSession.mmrAtRecording || 1000,
         isOldGhost,
+        // Extended ghost info
+        ghostCountry: ghostUser.country,
+        ghostGamesPlayed: ghostUser.gamesPlayed,
+        ghostGamesWon: ghostUser.gamesWon,
       });
 
       // Start first round after a short delay
@@ -1287,7 +1295,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       currentRound: 0,
     });
 
-    // Notify players
+    // Notify players with extended opponent info
     p1Socket.emit('match_found', {
       matchId: match.id,
       opponent: {
@@ -1295,6 +1303,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         username: player2.username,
         mmr: player2.mmr,
         league: player2.league,
+        country: player2.country,
+        gamesPlayed: player2.gamesPlayed,
+        gamesWon: player2.gamesWon,
       },
       puzzleSize,
     });
@@ -1306,6 +1317,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         username: player1.username,
         mmr: player1.mmr,
         league: player1.league,
+        country: player1.country,
+        gamesPlayed: player1.gamesPlayed,
+        gamesWon: player1.gamesWon,
       },
       puzzleSize,
     });

@@ -18,6 +18,10 @@ interface Opponent {
   username: string;
   mmr: number;
   league: LeagueTier;
+  // Extended info
+  country: string | null;
+  gamesPlayed: number;
+  gamesWon: number;
 }
 
 // Scheduled move for deterministic replay
