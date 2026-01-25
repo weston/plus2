@@ -74,6 +74,12 @@ export const authApi = {
     }),
 };
 
+// User preferences type
+export interface UserPreferences {
+  animationSpeed?: number;
+  cubeColors?: Record<string, string>;
+}
+
 // Users API
 export const usersApi = {
   getMe: (token: string) =>
@@ -103,6 +109,16 @@ export const usersApi = {
       method: 'PATCH',
       token,
       body: { username },
+    }),
+
+  getPreferences: (token: string) =>
+    request<UserPreferences>('/users/me/preferences', { token }),
+
+  updatePreferences: (token: string, preferences: UserPreferences) =>
+    request<UserPreferences>('/users/me/preferences', {
+      method: 'PUT',
+      token,
+      body: preferences,
     }),
 };
 

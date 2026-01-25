@@ -11,6 +11,7 @@ import { usersApi } from '@/lib/api';
 import type { PuzzleSize, LeagueTier } from '@plus2/shared';
 
 const PUZZLE_SIZES: PuzzleSize[] = ['2x2', '3x3', '4x4', '5x5'];
+const AVAILABLE_SIZES: PuzzleSize[] = ['3x3']; // Only 3x3 is available for now
 
 interface Stats {
   puzzleSize: PuzzleSize;
@@ -23,18 +24,18 @@ interface Stats {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { user, accessToken, logout } = useAuthStore();
+  const { user, accessToken, logout, _hasHydrated } = useAuthStore();
   const { phase, puzzleSize, setPuzzleSize, queuePosition, estimatedWait } = useGameStore();
   const { joinQueue, leaveQueue } = useSocket();
   const [stats, setStats] = useState<Stats[]>([]);
   const [selectedSize, setSelectedSize] = useState<PuzzleSize>('3x3');
 
-  // Redirect if not logged in
+  // Redirect if not logged in (wait for hydration first)
   useEffect(() => {
-    if (!user || !accessToken) {
+    if (_hasHydrated && (!user || !accessToken)) {
       router.push('/login');
     }
-  }, [user, accessToken, router]);
+  }, [user, accessToken, router, _hasHydrated]);
 
   // Load user stats
   useEffect(() => {
@@ -121,42 +122,58 @@ export default function DashboardPage() {
             <h3 className="text-xl font-semibold mb-4">Select Puzzle</h3>
 
             <div className="grid grid-cols-2 gap-3 mb-6">
-              {PUZZLE_SIZES.map((size) => (
-                <button
-                  key={size}
-                  onClick={() => setSelectedSize(size)}
-                  disabled={phase === 'queuing'}
-                  className={`p-4 rounded-lg border-2 transition-all ${
-                    selectedSize === size
-                      ? 'border-blue-500 bg-blue-500/20'
-                      : 'border-gray-700 hover:border-gray-600'
-                  } ${phase === 'queuing' ? 'opacity-50 cursor-not-allowed' : ''}`}
-                >
-                  <div className="text-2xl font-bold">{size}</div>
-                  <div className="text-sm text-gray-400">
-                    {stats.find((s) => s.puzzleSize === size)?.gamesPlayed || 0} games
-                  </div>
-                </button>
-              ))}
+              {PUZZLE_SIZES.map((size) => {
+                const isAvailable = AVAILABLE_SIZES.includes(size);
+                return (
+                  <button
+                    key={size}
+                    onClick={() => isAvailable && setSelectedSize(size)}
+                    disabled={phase === 'queuing' || !isAvailable}
+                    className={`p-4 rounded-lg border-2 transition-all ${
+                      selectedSize === size && isAvailable
+                        ? 'border-blue-500 bg-blue-500/20'
+                        : isAvailable
+                        ? 'border-gray-700 hover:border-gray-600'
+                        : 'border-gray-800 opacity-50 cursor-not-allowed'
+                    } ${phase === 'queuing' ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <div className="text-2xl font-bold">{size}</div>
+                    <div className="text-sm text-gray-400">
+                      {isAvailable
+                        ? `${stats.find((s) => s.puzzleSize === size)?.gamesPlayed || 0} games`
+                        : 'Coming Soon'}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
 
-            <button
-              onClick={handleQueue}
-              className={`w-full py-4 rounded-lg font-bold text-lg transition-all ${
-                phase === 'queuing'
-                  ? 'bg-red-600 hover:bg-red-700'
-                  : 'bg-green-600 hover:bg-green-700'
-              }`}
-            >
-              {phase === 'queuing' ? (
-                <span className="flex items-center justify-center gap-2">
-                  <span className="animate-spin">◌</span>
-                  Cancel Queue ({estimatedWait}s est.)
-                </span>
-              ) : (
-                'Find Match'
-              )}
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={handleQueue}
+                className={`flex-1 py-4 rounded-lg font-bold text-lg transition-all ${
+                  phase === 'queuing'
+                    ? 'bg-red-600 hover:bg-red-700'
+                    : 'bg-green-600 hover:bg-green-700'
+                }`}
+              >
+                {phase === 'queuing' ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="animate-spin">◌</span>
+                    Cancel ({estimatedWait}s)
+                  </span>
+                ) : (
+                  'Find Match'
+                )}
+              </button>
+
+              <Link
+                href="/practice"
+                className="flex-1 py-4 rounded-lg font-bold text-lg text-center bg-blue-600 hover:bg-blue-700 transition-all"
+              >
+                Practice
+              </Link>
+            </div>
           </div>
 
           {/* Stats for Selected Puzzle */}

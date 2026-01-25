@@ -1,0 +1,31 @@
+diff --git a/node_modules/cubing/dist/lib/cubing/chunks/twisty-dynamic-3d-Z7DZPPGE.js b/node_modules/cubing/dist/lib/cubing/chunks/twisty-dynamic-3d-Z7DZPPGE.js
+index 1668cba..effe8f5 100644
+--- a/node_modules/cubing/dist/lib/cubing/chunks/twisty-dynamic-3d-Z7DZPPGE.js
++++ b/node_modules/cubing/dist/lib/cubing/chunks/twisty-dynamic-3d-Z7DZPPGE.js
+@@ -103,7 +103,7 @@ var AxisInfo = class {
+         color: new Color(options?.hintColor ?? color).convertLinearToSRGB(),
+         side: BackSide,
+         transparent: true,
+-        opacity: 0.5 * hintOpacityScale
++        opacity: 1
+       }),
+       dim: new MeshBasicMaterial({
+         color: new Color(
+@@ -111,7 +111,7 @@ var AxisInfo = class {
+         ).convertLinearToSRGB(),
+         side: BackSide,
+         transparent: true,
+-        opacity: 0.5 * hintOpacityScale
++        opacity: 1
+       }),
+       oriented: orientedMaterialHint,
+       experimentalOriented2: experimentalOriented2MaterialHint,
+@@ -215,7 +215,7 @@ var cubieDimensions = {
+   // stickerWidth: 0.85, // Now `faceletScale` in options.
+   stickerElevation: 0.503,
+   foundationWidth: 1,
+-  hintStickerElevation: 1.45
++  hintStickerElevation: 0.8
+ };
+ var EXPERIMENTAL_PICTURE_CUBE_HINT_ELEVATION = 2;
+ var cube3DOptionsDefaults = {

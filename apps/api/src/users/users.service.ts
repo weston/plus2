@@ -166,4 +166,19 @@ export class UsersService {
       league: globalLeague,
     });
   }
+
+  async getPreferences(userId: string) {
+    const user = await this.findById(userId);
+    return user.preferences || {};
+  }
+
+  async updatePreferences(
+    userId: string,
+    preferences: { animationSpeed?: number; cubeColors?: Record<string, string> },
+  ) {
+    const user = await this.findById(userId);
+    const merged = { ...user.preferences, ...preferences };
+    await this.userRepository.update(userId, { preferences: merged });
+    return merged;
+  }
 }

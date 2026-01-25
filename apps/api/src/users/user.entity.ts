@@ -55,4 +55,10 @@ export class User {
 
   @OneToMany(() => KeybindingProfile, (profile) => profile.user)
   keybindingProfiles: KeybindingProfile[];
+
+  @Column({ type: 'json', nullable: true })
+  preferences: {
+    animationSpeed?: number;
+    cubeColors?: Record<string, string>;
+  };
 }

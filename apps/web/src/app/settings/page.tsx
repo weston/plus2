@@ -4,8 +4,10 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
-import { keybindingsApi } from '@/lib/api';
+import { keybindingsApi, usersApi } from '@/lib/api';
 import { ALL_MOVES, DEFAULT_KEYBINDINGS } from '@plus2/shared';
+
+type SettingsTab = 'controls' | 'appearance' | 'account';
 
 interface KeybindingProfile {
   id: string;
@@ -14,21 +16,41 @@ interface KeybindingProfile {
   bindings: Record<string, string>;
 }
 
+// Default cube face colors
+const DEFAULT_CUBE_COLORS: Record<string, string> = {
+  U: '#FFFFFF', // White
+  D: '#FFFF00', // Yellow
+  F: '#00FF00', // Green
+  B: '#0000FF', // Blue
+  R: '#FF0000', // Red
+  L: '#FFA500', // Orange
+};
+
+const DEFAULT_ANIMATION_SPEED = 3;
+
 export default function SettingsPage() {
   const router = useRouter();
-  const { user, accessToken } = useAuthStore();
+  const { user, accessToken, logout, _hasHydrated } = useAuthStore();
+  const [activeTab, setActiveTab] = useState<SettingsTab>('controls');
+
+  // Keybindings state
   const [profiles, setProfiles] = useState<KeybindingProfile[]>([]);
   const [activeProfile, setActiveProfile] = useState<KeybindingProfile | null>(null);
   const [editingMove, setEditingMove] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState('');
 
-  // Redirect if not logged in
+  // Appearance state
+  const [cubeColors, setCubeColors] = useState<Record<string, string>>(DEFAULT_CUBE_COLORS);
+  const [animationSpeed, setAnimationSpeed] = useState(DEFAULT_ANIMATION_SPEED);
+  const [isSavingPrefs, setIsSavingPrefs] = useState(false);
+
+  // Redirect if not logged in (wait for hydration first)
   useEffect(() => {
-    if (!user || !accessToken) {
+    if (_hasHydrated && (!user || !accessToken)) {
       router.push('/login');
     }
-  }, [user, accessToken, router]);
+  }, [user, accessToken, router, _hasHydrated]);
 
   // Load profiles
   useEffect(() => {
@@ -38,6 +60,22 @@ export default function SettingsPage() {
       setProfiles(data);
       const active = data.find((p) => p.isActive);
       if (active) setActiveProfile(active);
+    });
+  }, [accessToken]);
+
+  // Load preferences from server
+  useEffect(() => {
+    if (!accessToken) return;
+
+    usersApi.getPreferences(accessToken).then((prefs) => {
+      if (prefs.cubeColors) {
+        setCubeColors({ ...DEFAULT_CUBE_COLORS, ...prefs.cubeColors });
+      }
+      if (prefs.animationSpeed !== undefined) {
+        setAnimationSpeed(prefs.animationSpeed);
+      }
+    }).catch(() => {
+      // Failed to load preferences, use defaults
     });
   }, [accessToken]);
 
@@ -92,7 +130,7 @@ export default function SettingsPage() {
     }
   };
 
-  const resetToDefaults = async () => {
+  const resetBindingsToDefaults = async () => {
     if (!activeProfile || !accessToken) return;
 
     try {
@@ -103,6 +141,44 @@ export default function SettingsPage() {
     } catch (err) {
       setMessage('Failed to reset');
     }
+  };
+
+  // Save preferences to server
+  const savePreferences = async (prefs: { animationSpeed?: number; cubeColors?: Record<string, string> }) => {
+    if (!accessToken) return;
+    setIsSavingPrefs(true);
+    try {
+      await usersApi.updatePreferences(accessToken, prefs);
+    } catch {
+      setMessage('Failed to save preferences');
+    } finally {
+      setIsSavingPrefs(false);
+    }
+  };
+
+  // Cube color handlers
+  const handleColorChange = (face: string, color: string) => {
+    const newColors = { ...cubeColors, [face]: color };
+    setCubeColors(newColors);
+    savePreferences({ cubeColors: newColors });
+  };
+
+  // Animation speed handler
+  const handleAnimationSpeedChange = (speed: number) => {
+    setAnimationSpeed(speed);
+    savePreferences({ animationSpeed: speed });
+  };
+
+  const resetColorsToDefaults = () => {
+    setCubeColors(DEFAULT_CUBE_COLORS);
+    savePreferences({ cubeColors: DEFAULT_CUBE_COLORS });
+    setMessage('Colors reset to defaults');
+    setTimeout(() => setMessage(''), 3000);
+  };
+
+  const handleLogout = () => {
+    logout();
+    router.push('/');
   };
 
   if (!user) return null;
@@ -143,6 +219,12 @@ export default function SettingsPage() {
     </div>
   );
 
+  const tabs: { id: SettingsTab; label: string }[] = [
+    { id: 'controls', label: 'Controls' },
+    { id: 'appearance', label: 'Appearance' },
+    { id: 'account', label: 'Account' },
+  ];
+
   return (
     <div className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
@@ -156,59 +238,193 @@ export default function SettingsPage() {
           </div>
         </header>
 
-        {/* Keybindings */}
-        <div className="card">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-xl font-semibold">Keybindings</h2>
-            <div className="flex gap-2">
+        {/* Tab Navigation */}
+        <div className="flex gap-1 mb-6 bg-gray-900 p-1 rounded-lg">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex-1 py-2 px-4 rounded-md font-medium transition-all ${
+                activeTab === tab.id
+                  ? 'bg-gray-700 text-white'
+                  : 'text-gray-400 hover:text-white hover:bg-gray-800'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {message && (
+          <div className={`mb-4 p-3 rounded ${
+            message.includes('Failed') ? 'bg-red-900/50' : 'bg-green-900/50'
+          }`}>
+            {message}
+          </div>
+        )}
+
+        {/* Controls Tab */}
+        {activeTab === 'controls' && (
+          <div className="card">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-semibold">Keybindings</h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={resetBindingsToDefaults}
+                  className="btn btn-secondary text-sm"
+                >
+                  Reset to Defaults
+                </button>
+                <button
+                  onClick={saveBindings}
+                  disabled={isSaving}
+                  className="btn btn-primary text-sm"
+                >
+                  {isSaving ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </div>
+
+            <p className="text-gray-400 mb-6">
+              Click on a move to change its keybinding, then press the new key.
+            </p>
+
+            <div className="grid md:grid-cols-2 gap-6">
+              <div>
+                {renderMoveGroup('Right Face (R)', faceRMoves)}
+                {renderMoveGroup('Left Face (L)', faceLMoves)}
+                {renderMoveGroup('Up Face (U)', faceUMoves)}
+              </div>
+              <div>
+                {renderMoveGroup('Down Face (D)', faceDMoves)}
+                {renderMoveGroup('Front Face (F)', faceFMoves)}
+                {renderMoveGroup('Back Face (B)', faceBMoves)}
+              </div>
+            </div>
+
+            <div className="border-t border-gray-700 pt-6 mt-6">
+              <div className="grid md:grid-cols-2 gap-6">
+                {renderMoveGroup('Slice Moves', sliceMoves)}
+                {renderMoveGroup('Rotations', rotations)}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Appearance Tab */}
+        {activeTab === 'appearance' && (
+          <div className="card">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-semibold">Cube Colors</h2>
               <button
-                onClick={resetToDefaults}
+                onClick={resetColorsToDefaults}
                 className="btn btn-secondary text-sm"
               >
                 Reset to Defaults
               </button>
+            </div>
+
+            <p className="text-gray-400 mb-6">
+              Customize the colors of each face of the cube.
+            </p>
+
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              {Object.entries(cubeColors).map(([face, color]) => (
+                <div key={face} className="bg-gray-800 p-4 rounded-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-semibold">
+                      {face === 'U' && 'Top (U)'}
+                      {face === 'D' && 'Bottom (D)'}
+                      {face === 'F' && 'Front (F)'}
+                      {face === 'B' && 'Back (B)'}
+                      {face === 'R' && 'Right (R)'}
+                      {face === 'L' && 'Left (L)'}
+                    </span>
+                    <div
+                      className="w-8 h-8 rounded border-2 border-gray-600"
+                      style={{ backgroundColor: color }}
+                    />
+                  </div>
+                  <input
+                    type="color"
+                    value={color}
+                    onChange={(e) => handleColorChange(face, e.target.value)}
+                    className="w-full h-10 rounded cursor-pointer bg-transparent"
+                  />
+                </div>
+              ))}
+            </div>
+
+            {/* Animation Speed */}
+            <div className="mt-8 pt-6 border-t border-gray-700">
+              <h2 className="text-xl font-semibold mb-4">Animation Speed</h2>
+              <p className="text-gray-400 mb-4">
+                Control how fast cube moves animate during practice.
+              </p>
+              <div className="bg-gray-800 p-4 rounded-lg">
+                <input
+                  type="range"
+                  min="0"
+                  max="10"
+                  step="0.5"
+                  value={animationSpeed}
+                  onChange={(e) => handleAnimationSpeedChange(parseFloat(e.target.value))}
+                  className="w-full accent-blue-500"
+                />
+                <div className="flex justify-between text-sm text-gray-400 mt-2">
+                  <span>Instant</span>
+                  <span className="text-white font-medium">
+                    {animationSpeed === 0 ? 'Instant' : `${animationSpeed}x`}
+                  </span>
+                  <span>Slow</span>
+                </div>
+              </div>
+            </div>
+
+            {isSavingPrefs && (
+              <div className="mt-4 text-sm text-gray-400">Saving...</div>
+            )}
+          </div>
+        )}
+
+        {/* Account Tab */}
+        {activeTab === 'account' && (
+          <div className="space-y-6">
+            <div className="card">
+              <h2 className="text-xl font-semibold mb-6">Account Information</h2>
+
+              <div className="space-y-4">
+                <div className="flex justify-between items-center py-3 border-b border-gray-700">
+                  <span className="text-gray-400">Username</span>
+                  <span className="font-semibold">{user.username}</span>
+                </div>
+                <div className="flex justify-between items-center py-3 border-b border-gray-700">
+                  <span className="text-gray-400">Email</span>
+                  <span>{user.email}</span>
+                </div>
+                <div className="flex justify-between items-center py-3 border-b border-gray-700">
+                  <span className="text-gray-400">Current League</span>
+                  <span className="font-semibold capitalize">{user.league}</span>
+                </div>
+                <div className="flex justify-between items-center py-3">
+                  <span className="text-gray-400">MMR</span>
+                  <span className="font-semibold">{user.mmr}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <h2 className="text-xl font-semibold mb-6">Danger Zone</h2>
+
               <button
-                onClick={saveBindings}
-                disabled={isSaving}
-                className="btn btn-primary text-sm"
+                onClick={handleLogout}
+                className="btn btn-danger"
               >
-                {isSaving ? 'Saving...' : 'Save Changes'}
+                Log Out
               </button>
             </div>
           </div>
-
-          {message && (
-            <div className={`mb-4 p-3 rounded ${
-              message.includes('Failed') ? 'bg-red-900/50' : 'bg-green-900/50'
-            }`}>
-              {message}
-            </div>
-          )}
-
-          <p className="text-gray-400 mb-6">
-            Click on a move to change its keybinding, then press the new key.
-          </p>
-
-          <div className="grid md:grid-cols-2 gap-6">
-            <div>
-              {renderMoveGroup('Right Face (R)', faceRMoves)}
-              {renderMoveGroup('Left Face (L)', faceLMoves)}
-              {renderMoveGroup('Up Face (U)', faceUMoves)}
-            </div>
-            <div>
-              {renderMoveGroup('Down Face (D)', faceDMoves)}
-              {renderMoveGroup('Front Face (F)', faceFMoves)}
-              {renderMoveGroup('Back Face (B)', faceBMoves)}
-            </div>
-          </div>
-
-          <div className="border-t border-gray-700 pt-6 mt-6">
-            <div className="grid md:grid-cols-2 gap-6">
-              {renderMoveGroup('Slice Moves', sliceMoves)}
-              {renderMoveGroup('Rotations', rotations)}
-            </div>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );

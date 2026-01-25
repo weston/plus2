@@ -68,13 +68,16 @@ export function TwistyCube({
         puzzle: puzzleMap[puzzleSize],
         experimentalSetupAlg: scramble, // Setup alg doesn't animate
         alg: '', // Start with empty alg for moves
-        hintFacelets: 'none',
+        hintFacelets: 'floating',
         backView: 'none',
         background: 'none',
         controlPanel: 'none',
         visualization: '3D',
         tempoScale: animationSpeedRef.current,
-      });
+        experimentalStickering: 'full',
+      } as any);
+
+
 
       player.style.width = '100%';
       player.style.height = '100%';
@@ -165,7 +168,7 @@ export function TwistyCube({
     <div
       ref={containerRef}
       className={`cube-container ${className}`}
-      style={{ minHeight: '200px' }}
+      style={{ minHeight: '400px' }}
     />
   );
 }

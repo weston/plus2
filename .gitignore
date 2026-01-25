@@ -39,3 +39,11 @@ coverage/
 # Misc
 *.tgz
 .cache/
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+terraform/*.auto.tfvars
+terraform/.terraform.lock.hcl

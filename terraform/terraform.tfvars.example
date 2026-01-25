@@ -1,0 +1,19 @@
+# Copy this file to terraform.tfvars and fill in the values
+# DO NOT commit terraform.tfvars to git!
+
+project_name = "plus2"
+environment  = "dev"
+aws_region   = "us-east-1"
+
+# Database credentials
+db_username = "plus2admin"
+db_password = "CHANGE_ME_TO_A_SECURE_PASSWORD"
+
+# JWT secret for API authentication
+jwt_secret = "CHANGE_ME_TO_A_SECURE_SECRET"
+
+# API configuration (cost-optimized defaults)
+api_cpu           = 256   # 0.25 vCPU
+api_memory        = 512   # 512 MB
+api_desired_count = 1
+use_fargate_spot  = true  # ~70% cheaper than on-demand

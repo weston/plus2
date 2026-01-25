@@ -14,10 +14,12 @@
     "db:migrate": "npm run migration:run -w apps/api",
     "db:seed": "npm run seed -w apps/api",
     "lint": "npm run lint -w apps/api && npm run lint -w apps/web",
-    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules"
+    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules",
+    "postinstall": "patch-package"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
+    "patch-package": "^8.0.1",
     "typescript": "^5.3.3"
   },
   "engines": {

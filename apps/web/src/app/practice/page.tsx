@@ -6,10 +6,11 @@ import { TwistyCube } from '@/components/TwistyCube';
 import { Timer } from '@/components/Timer';
 import { useKeybindings } from '@/hooks/useKeybindings';
 import { useAuthStore } from '@/stores/auth';
+import { usersApi } from '@/lib/api';
 import type { PuzzleSize } from '@plus2/shared';
 import { INSPECTION_DURATION_MS, SCRAMBLE_LENGTHS } from '@plus2/shared';
 
-const PUZZLE_SIZES: PuzzleSize[] = ['2x2', '3x3', '4x4', '5x5'];
+const PUZZLE_SIZES: PuzzleSize[] = ['3x3']; // Only 3x3 for now
 
 type PracticePhase = 'idle' | 'inspecting' | 'solving' | 'done';
 
@@ -83,14 +84,14 @@ function calculateAo12(times: SolveTime[]): number | null {
   return Math.round(middle10.reduce((a, b) => a + b, 0) / 10);
 }
 
-const ANIMATION_SPEED_KEY = 'plus2_animation_speed';
 const DEFAULT_ANIMATION_SPEED = 3;
 
 export default function PracticePage() {
-  const { user } = useAuthStore();
+  const { user, accessToken } = useAuthStore();
   const [puzzleSize, setPuzzleSize] = useState<PuzzleSize>('3x3');
   const [phase, setPhase] = useState<PracticePhase>('idle');
-  const [scramble, setScramble] = useState('');
+  const [scramble, setScramble] = useState(''); // The scramble text to display
+  const [appliedScramble, setAppliedScramble] = useState(''); // Scramble applied to cube (empty until inspection)
   const [moves, setMoves] = useState<string[]>([]);
   const [inspectionStart, setInspectionStart] = useState<number | null>(null);
   const [solveStart, setSolveStart] = useState<number | null>(null);
@@ -100,28 +101,29 @@ export default function PracticePage() {
 
   const moveSeqRef = useRef(0);
   const inspectionTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isSolvedRef = useRef(false); // Track if cube was solved during this attempt
 
-  // Load animation speed from localStorage
+  // Load animation speed from server preferences
   useEffect(() => {
-    const saved = localStorage.getItem(ANIMATION_SPEED_KEY);
-    if (saved) {
-      setAnimationSpeed(parseFloat(saved));
-    }
-  }, []);
+    if (!accessToken) return;
+    usersApi.getPreferences(accessToken).then((prefs) => {
+      if (prefs.animationSpeed !== undefined) {
+        setAnimationSpeed(prefs.animationSpeed);
+      }
+    }).catch(() => {
+      // Use default if failed to load
+    });
+  }, [accessToken]);
 
-  // Save animation speed to localStorage
-  const handleAnimationSpeedChange = (speed: number) => {
-    setAnimationSpeed(speed);
-    localStorage.setItem(ANIMATION_SPEED_KEY, speed.toString());
-  };
-
-  // Generate new scramble
+  // Generate new scramble (but don't apply it to cube yet)
   const newScramble = useCallback(() => {
     setScramble(generateScramble(puzzleSize));
+    setAppliedScramble(''); // Cube stays solved until inspection
     setMoves([]);
     setSolveTime(null);
     setPhase('idle');
     moveSeqRef.current = 0;
+    isSolvedRef.current = false;
   }, [puzzleSize]);
 
   // Initialize with a scramble
@@ -129,18 +131,20 @@ export default function PracticePage() {
     newScramble();
   }, [puzzleSize]);
 
-  // Start inspection
+  // Start inspection - scrambles the cube and shows it
   const startInspection = useCallback(() => {
     if (phase !== 'idle') return;
+    setAppliedScramble(scramble); // Apply scramble to cube now
     setPhase('inspecting');
     setInspectionStart(Date.now());
+    isSolvedRef.current = false;
 
     // Auto-start solve after inspection ends
     inspectionTimerRef.current = setTimeout(() => {
       setPhase('solving');
       setSolveStart(Date.now());
     }, INSPECTION_DURATION_MS);
-  }, [phase]);
+  }, [phase, scramble]);
 
   // Check if move is a rotation (doesn't start timer)
   const isRotation = (move: string) => {
@@ -150,23 +154,6 @@ export default function PracticePage() {
   // Handle move
   const handleMove = useCallback((move: string) => {
     const rotation = isRotation(move);
-
-    if (phase === 'idle') {
-      // Rotations during idle just rotate the cube, don't start timer
-      if (rotation) {
-        setMoves(prev => [...prev, move]);
-        return;
-      }
-      // First actual move starts solving immediately (skip inspection for practice mode)
-      if (inspectionTimerRef.current) {
-        clearTimeout(inspectionTimerRef.current);
-      }
-      setPhase('solving');
-      setSolveStart(Date.now());
-      moveSeqRef.current = 1;
-      setMoves(prev => [...prev, move]);
-      return;
-    }
 
     if (phase === 'inspecting') {
       // Rotations during inspection don't start the solve
@@ -180,36 +167,46 @@ export default function PracticePage() {
       }
       setPhase('solving');
       setSolveStart(Date.now());
+      setMoves(prev => [...prev, move]);
+      moveSeqRef.current = 1;
+      return;
     }
 
-    if (phase === 'inspecting' || phase === 'solving') {
+    if (phase === 'solving') {
       moveSeqRef.current += 1;
       setMoves(prev => [...prev, move]);
     }
-  }, [phase, startInspection]);
+  }, [phase]);
+
+  // Count non-rotation moves
+  const countNonRotationMoves = useCallback((moveList: string[]) => {
+    return moveList.filter(m => !isRotation(m)).length;
+  }, []);
 
   // Stop timer (called when cube is solved or manually)
-  const stopTimer = useCallback((finalMoveCount?: number) => {
+  const stopTimer = useCallback((wasSolved: boolean = false) => {
     if (phase !== 'solving' || !solveStart) return;
 
     const time = Date.now() - solveStart;
     setSolveTime(time);
     setPhase('done');
 
-    // Record the solve
+    // Record the solve - DNF if stopped manually and not solved
     const newTime: SolveTime = {
       time,
       scramble,
-      moveCount: finalMoveCount ?? moves.length,
+      moveCount: countNonRotationMoves(moves),
       timestamp: new Date(),
+      dnf: !wasSolved, // DNF if not solved
     };
     setTimes(prev => [...prev, newTime]);
-  }, [phase, solveStart, scramble, moves.length]);
+  }, [phase, solveStart, scramble, moves, countNonRotationMoves]);
 
   // Called when cube is solved (auto-detected)
   const handleSolved = useCallback(() => {
-    stopTimer(moves.length);
-  }, [stopTimer, moves.length]);
+    isSolvedRef.current = true;
+    stopTimer(true); // Pass true to indicate it was solved
+  }, [stopTimer]);
 
   // Mark last solve as DNF
   const markDNF = useCallback(() => {
@@ -246,7 +243,7 @@ export default function PracticePage() {
         if (phase === 'idle') {
           startInspection();
         } else if (phase === 'solving') {
-          stopTimer();
+          stopTimer(isSolvedRef.current); // DNF if not solved
         } else if (phase === 'done') {
           newScramble();
         }
@@ -270,9 +267,9 @@ export default function PracticePage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [phase, startInspection, stopTimer, newScramble]);
 
-  // Use keybindings for cube moves
+  // Use keybindings for cube moves (not during idle since cube is hidden)
   useKeybindings({
-    enabled: phase === 'idle' || phase === 'inspecting' || phase === 'solving',
+    enabled: phase === 'inspecting' || phase === 'solving',
     onMove: handleMove,
   });
 
@@ -296,22 +293,9 @@ export default function PracticePage() {
             <h1 className="text-2xl font-bold">Practice Mode</h1>
           </div>
 
-          {/* Puzzle Size Selector */}
-          <div className="flex gap-2">
-            {PUZZLE_SIZES.map((size) => (
-              <button
-                key={size}
-                onClick={() => setPuzzleSize(size)}
-                disabled={phase !== 'idle' && phase !== 'done'}
-                className={`px-3 py-1 rounded-lg font-medium transition-all ${
-                  puzzleSize === size
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                } disabled:opacity-50`}
-              >
-                {size}
-              </button>
-            ))}
+          {/* Puzzle type badge */}
+          <div className="px-3 py-1 rounded-lg bg-blue-600 text-white font-medium">
+            3x3
           </div>
         </header>
 
@@ -364,29 +348,31 @@ export default function PracticePage() {
                   )}
 
                   <p className="text-gray-400 mt-4 text-sm md:text-base">
-                    {phase === 'idle' && 'Press SPACE to start inspection, or make a move'}
+                    {phase === 'idle' && 'Press SPACE to scramble and start inspection'}
                     {phase === 'inspecting' && 'Inspecting... Make a move to start timer'}
                     {phase === 'solving' && 'Solving... Timer stops when cube is solved'}
                     {phase === 'done' && 'Press SPACE for next scramble'}
                   </p>
                 </div>
 
-                {/* Cube visualization */}
-                <div className="w-full max-w-md">
-                  <TwistyCube
-                    puzzleSize={puzzleSize}
-                    scramble={scramble}
-                    moves={moves}
-                    onSolved={handleSolved}
-                    animationSpeed={animationSpeed}
-                    className="h-48 md:h-64"
-                  />
-                </div>
+                {/* Cube visualization - hidden during idle */}
+                {phase !== 'idle' && (
+                  <div className="w-full max-w-2xl mx-auto">
+                    <TwistyCube
+                      puzzleSize={puzzleSize}
+                      scramble={appliedScramble}
+                      moves={moves}
+                      onSolved={handleSolved}
+                      animationSpeed={animationSpeed}
+                      className="h-80 md:h-[500px]"
+                    />
+                  </div>
+                )}
 
-                {/* Move count */}
-                {moves.length > 0 && (
+                {/* Move count - excludes rotations */}
+                {countNonRotationMoves(moves) > 0 && (
                   <p className="text-gray-400 mt-4">
-                    Moves: {moves.length}
+                    Moves: {countNonRotationMoves(moves)}
                   </p>
                 )}
               </div>
@@ -506,28 +492,6 @@ export default function PracticePage() {
               </div>
             </div>
 
-            {/* Animation Speed */}
-            <div className="card">
-              <h3 className="text-lg font-semibold mb-3">Animation Speed</h3>
-              <div className="space-y-3">
-                <input
-                  type="range"
-                  min="0"
-                  max="10"
-                  step="0.5"
-                  value={animationSpeed}
-                  onChange={(e) => handleAnimationSpeedChange(parseFloat(e.target.value))}
-                  className="w-full accent-blue-500"
-                />
-                <div className="flex justify-between text-xs text-gray-400">
-                  <span>Instant</span>
-                  <span className="text-white font-medium">
-                    {animationSpeed === 0 ? 'Instant' : `${animationSpeed}x`}
-                  </span>
-                  <span>Fast</span>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>

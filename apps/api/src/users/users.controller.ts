@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Patch,
+  Put,
   Param,
   Body,
   UseGuards,
@@ -9,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { UsersService } from './users.service';
-import { IsString, MinLength, MaxLength, Matches } from 'class-validator';
+import { IsString, MinLength, MaxLength, Matches, IsNumber, IsOptional, IsObject, Min, Max } from 'class-validator';
 
 class UpdateUsernameDto {
   @IsString()
@@ -17,6 +18,18 @@ class UpdateUsernameDto {
   @MaxLength(32)
   @Matches(/^[a-zA-Z0-9_]+$/)
   username: string;
+}
+
+class UpdatePreferencesDto {
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(10)
+  animationSpeed?: number;
+
+  @IsOptional()
+  @IsObject()
+  cubeColors?: Record<string, string>;
 }
 
 @Controller('users')
@@ -53,5 +66,20 @@ export class UsersController {
   async getUserStats(@Param('id') id: string) {
     const profile = await this.usersService.getProfile(id);
     return profile.stats;
+  }
+
+  @Get('me/preferences')
+  @UseGuards(JwtAuthGuard)
+  async getPreferences(@Request() req: { user: { id: string } }) {
+    return this.usersService.getPreferences(req.user.id);
+  }
+
+  @Put('me/preferences')
+  @UseGuards(JwtAuthGuard)
+  async updatePreferences(
+    @Request() req: { user: { id: string } },
+    @Body() dto: UpdatePreferencesDto,
+  ) {
+    return this.usersService.updatePreferences(req.user.id, dto);
   }
 }

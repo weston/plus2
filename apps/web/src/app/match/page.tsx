@@ -11,11 +11,19 @@ import { Timer } from '@/components/Timer';
 import { LeagueBadge } from '@/components/LeagueBadge';
 import { INSPECTION_DURATION_MS } from '@plus2/shared';
 
+// Rotation moves don't start the solve timer
+const ROTATION_MOVES = ['x', "x'", 'x2', 'y', "y'", 'y2', 'z', "z'", 'z2'];
+
+function isRotationMove(move: string): boolean {
+  return ROTATION_MOVES.includes(move);
+}
+
 export default function MatchPage() {
   const router = useRouter();
   const { user } = useAuthStore();
   const {
     phase,
+    setPhase,
     puzzleSize,
     matchId,
     opponent,
@@ -34,14 +42,18 @@ export default function MatchPage() {
     newMmr,
     newLeague,
     addMyMove,
+    setSolveComplete,
   } = useGameStore();
 
   const { sendMove, sendSolveComplete, sendRematch, sendRequeue } = useSocket();
   const moveSeqRef = useRef(0);
 
-  // State for solving
-  const [timerStart, setTimerStart] = useState<number | null>(null);
+  // Separate timer states for each player
+  const [myTimerStart, setMyTimerStart] = useState<number | null>(null);
+  const [opponentTimerStart, setOpponentTimerStart] = useState<number | null>(null);
+  const [myTimerRunning, setMyTimerRunning] = useState(false);
   const [isSolved, setIsSolved] = useState(false);
+  const [inspectionTimeLeft, setInspectionTimeLeft] = useState(15);
 
   // Redirect if no match
   useEffect(() => {
@@ -50,61 +62,85 @@ export default function MatchPage() {
     }
   }, [matchId, phase, router]);
 
-  // Handle inspection timer
+  // Reset state on new round
   useEffect(() => {
-    if (phase === 'inspecting' && inspectionStartsAt > 0) {
-      // Inspection already started
-      const elapsed = Date.now() - inspectionStartsAt;
-      if (elapsed < INSPECTION_DURATION_MS) {
-        setTimerStart(inspectionStartsAt);
-      }
-    }
-  }, [phase, inspectionStartsAt]);
-
-  // Handle solve start
-  useEffect(() => {
-    if (phase === 'solving' && solveStartsAt > 0) {
-      setTimerStart(solveStartsAt);
+    if (phase === 'inspecting') {
+      setMyTimerStart(null);
+      setOpponentTimerStart(null);
+      setMyTimerRunning(false);
+      setIsSolved(false);
       moveSeqRef.current = 0;
     }
-  }, [phase, solveStartsAt]);
+  }, [phase, currentRound]);
+
+  // Inspection countdown
+  useEffect(() => {
+    if (phase !== 'inspecting' || !inspectionStartsAt) return;
+
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - inspectionStartsAt;
+      const remaining = Math.max(0, Math.ceil((INSPECTION_DURATION_MS - elapsed) / 1000));
+      setInspectionTimeLeft(remaining);
+
+      // Auto-start solve when inspection ends
+      if (remaining === 0 && !myTimerStart) {
+        setMyTimerStart(Date.now());
+        setMyTimerRunning(true);
+        setPhase('solving');
+      }
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, [phase, inspectionStartsAt, myTimerStart, setPhase]);
+
+  // Start opponent timer when they make their first non-rotation move
+  useEffect(() => {
+    if (opponentMoves.length > 0 && !opponentTimerStart) {
+      // Check if any move is a non-rotation move
+      const hasNonRotation = opponentMoves.some(m => !isRotationMove(m));
+      if (hasNonRotation) {
+        setOpponentTimerStart(Date.now());
+      }
+    }
+  }, [opponentMoves, opponentTimerStart]);
 
   // Handle move from keyboard
   const handleMove = useCallback(
     (move: string) => {
       if (phase !== 'inspecting' && phase !== 'solving') return;
 
-      // If in inspection and making first move, this starts the solve
-      // The server handles this transition
-
       moveSeqRef.current += 1;
       addMyMove(move);
       sendMove(moveSeqRef.current, move);
 
-      // For MVP, we'll use a simple check
-      // In production, validate cube state properly
-      // This is a placeholder - actual solve detection needs cubing.js state checking
-      if (myMoves.length > 20) {
-        // Simulate solve completion after enough moves (for testing)
-        // In reality, you'd check if cube is solved
+      // If this is a non-rotation move and timer hasn't started, start it
+      if (!isRotationMove(move) && !myTimerStart) {
+        setMyTimerStart(Date.now());
+        setMyTimerRunning(true);
+        if (phase === 'inspecting') {
+          setPhase('solving');
+        }
       }
     },
-    [phase, addMyMove, sendMove, myMoves.length]
+    [phase, addMyMove, sendMove, myTimerStart, setPhase]
   );
 
-  // Handle spacebar for solve completion (placeholder for actual solve detection)
+  // Handle spacebar for solve completion
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && phase === 'solving' && !isSolved) {
+      if (e.code === 'Space' && phase === 'solving' && myTimerRunning && !isSolved) {
         e.preventDefault();
+        const solveTime = myTimerStart ? Date.now() - myTimerStart : 0;
         setIsSolved(true);
+        setMyTimerRunning(false);
+        setSolveComplete(solveTime);
         sendSolveComplete();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [phase, isSolved, sendSolveComplete]);
+  }, [phase, myTimerRunning, isSolved, myTimerStart, sendSolveComplete, setSolveComplete]);
 
   // Use keybindings
   useKeybindings({
@@ -136,8 +172,16 @@ export default function MatchPage() {
           </div>
         </header>
 
-        {/* Scramble */}
+        {/* Scramble and Inspection Timer */}
         <div className="card mb-4 text-center">
+          {phase === 'inspecting' && (
+            <div className={`text-6xl font-bold mb-2 ${
+              inspectionTimeLeft <= 3 ? 'text-red-500' :
+              inspectionTimeLeft <= 8 ? 'text-yellow-500' : 'text-green-500'
+            }`}>
+              {inspectionTimeLeft}s
+            </div>
+          )}
           <p className="text-gray-400 text-sm mb-1">Scramble</p>
           <p className="scramble-text text-xl">{scramble || 'Waiting for scramble...'}</p>
         </div>
@@ -164,15 +208,15 @@ export default function MatchPage() {
 
             <div className="text-center">
               <Timer
-                startTime={timerStart}
-                isRunning={phase === 'inspecting' || phase === 'solving'}
-                finalTime={myTime}
-                isInspection={phase === 'inspecting'}
-                inspectionDuration={INSPECTION_DURATION_MS}
+                startTime={myTimerStart}
+                isRunning={myTimerRunning}
+                finalTime={isSolved ? myTime : undefined}
               />
               <p className="text-gray-400 mt-2">
-                {phase === 'inspecting' && 'Inspection - press any move key to start'}
-                {phase === 'solving' && 'Solving - press SPACE when done'}
+                {phase === 'inspecting' && !myTimerStart && 'Inspection - make a move to start solving'}
+                {phase === 'inspecting' && myTimerStart && 'Solving...'}
+                {phase === 'solving' && myTimerRunning && 'Press SPACE when solved'}
+                {phase === 'solving' && !myTimerRunning && isSolved && 'Done!'}
                 {phase === 'waiting_opponent' && 'Waiting for opponent...'}
               </p>
             </div>
@@ -196,15 +240,17 @@ export default function MatchPage() {
             />
 
             <div className="text-center">
-              {opponentTime ? (
-                <div className="timer text-4xl font-bold text-gray-400">
-                  {(opponentTime / 1000).toFixed(2)}s
-                </div>
-              ) : (
-                <div className="text-gray-400">
-                  {opponentMoves.length > 0 ? 'Solving...' : 'Waiting...'}
-                </div>
-              )}
+              <Timer
+                startTime={opponentTimerStart}
+                isRunning={opponentTimerStart !== null && !opponentTime}
+                finalTime={opponentTime}
+              />
+              <p className="text-gray-400 mt-2">
+                {!opponentTimerStart && phase === 'inspecting' && 'Inspecting...'}
+                {!opponentTimerStart && phase === 'solving' && 'Inspecting...'}
+                {opponentTimerStart && !opponentTime && 'Solving...'}
+                {opponentTime && 'Done!'}
+              </p>
             </div>
           </div>
         </div>

@@ -10,7 +10,7 @@ const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001'
 
 export function useSocket() {
   const socketRef = useRef<Socket | null>(null);
-  const { accessToken } = useAuthStore();
+  const { accessToken, updateUser } = useAuthStore();
   const {
     puzzleSize,
     setPhase,
@@ -90,6 +90,8 @@ export function useSocket() {
         data.newMmr,
         data.newLeague
       );
+      // Update the auth store with new MMR and league
+      updateUser({ mmr: data.newMmr, league: data.newLeague });
     });
 
     socket.on('opponent_disconnect', () => {

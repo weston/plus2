@@ -4,6 +4,7 @@ import {
   SubscribeMessage,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   ConnectedSocket,
   MessageBody,
 } from '@nestjs/websockets';
@@ -23,25 +24,28 @@ interface AuthenticatedSocket extends Socket {
 
 @WebSocketGateway({
   cors: {
-    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+    origin: '*',
     credentials: true,
   },
   namespace: '/game',
+  transports: ['websocket', 'polling'],
 })
-export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  // Map matchId -> { player1Socket, player2Socket, ... }
+  // Map matchId -> match state (stores userIds, not socket refs which can become stale)
   private activeMatches: Map<
     string,
     {
-      player1Socket: AuthenticatedSocket;
-      player2Socket: AuthenticatedSocket;
+      player1Id: string;
+      player2Id: string;
       player1Ready: boolean;
       player2Ready: boolean;
       currentRound: number;
       inspectionTimer?: NodeJS.Timeout;
+      player1AbandonTimeout?: NodeJS.Timeout;
+      player2AbandonTimeout?: NodeJS.Timeout;
     }
   > = new Map();
 
@@ -53,8 +57,10 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
     private matchmakingService: MatchmakingService,
     @Inject(forwardRef(() => MatchesService))
     private matchesService: MatchesService,
-  ) {
-    // Start matchmaking loop
+  ) {}
+
+  afterInit() {
+    console.log('MatchmakingGateway initialized, starting matchmaking loop');
     this.startMatchmakingLoop();
   }
 
@@ -92,7 +98,70 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
       socket.userId = payload.sub;
       socket.username = payload.username;
 
-      console.log(`User ${socket.username} connected`);
+      console.log(`User ${socket.username} connected (userId: ${socket.userId})`);
+
+      // Check if user has an active match and rejoin them
+      console.log(`Active matches: ${this.activeMatches.size}`);
+      for (const [matchId, matchState] of this.activeMatches.entries()) {
+        console.log(`Checking match ${matchId}: p1=${matchState.player1Id}, p2=${matchState.player2Id}`);
+        if (matchState.player1Id === socket.userId || matchState.player2Id === socket.userId) {
+          socket.matchId = matchId;
+          socket.join(matchId);
+
+          // Cancel abandon timeout for this player
+          const isPlayer1 = matchState.player1Id === socket.userId;
+          if (isPlayer1 && matchState.player1AbandonTimeout) {
+            clearTimeout(matchState.player1AbandonTimeout);
+            matchState.player1AbandonTimeout = undefined;
+            console.log(`Cancelled abandon timeout for player1 (${socket.username})`);
+          } else if (!isPlayer1 && matchState.player2AbandonTimeout) {
+            clearTimeout(matchState.player2AbandonTimeout);
+            matchState.player2AbandonTimeout = undefined;
+            console.log(`Cancelled abandon timeout for player2 (${socket.username})`);
+          }
+
+          // Notify opponent that player reconnected
+          const opponentId = isPlayer1 ? matchState.player2Id : matchState.player1Id;
+          const opponentSocket = this.findSocketByUserId(opponentId);
+          opponentSocket?.emit('opponent_reconnect', {});
+
+          console.log(`User ${socket.username} rejoined match ${matchId}`);
+
+          // Send current match state to the reconnected user
+          const match = await this.matchesService.getMatch(matchId);
+          if (match) {
+            const isPlayer1 = matchState.player1Id === socket.userId;
+            const opponentId = isPlayer1 ? matchState.player2Id : matchState.player1Id;
+            const opponentUser = match.player1.id === opponentId ? match.player1 : match.player2;
+
+            socket.emit('match_found', {
+              matchId,
+              opponent: {
+                id: opponentId,
+                username: opponentUser.username,
+                mmr: opponentUser.mmr,
+                league: opponentUser.league,
+              },
+              puzzleSize: match.puzzleSize,
+            });
+
+            // If there's an active round, send round_start
+            if (matchState.currentRound > 0 && match.solves?.length > 0) {
+              const currentSolve = match.solves.find(s => s.roundNumber === matchState.currentRound);
+              if (currentSolve) {
+                socket.emit('round_start', {
+                  round: matchState.currentRound,
+                  scramble: currentSolve.scramble,
+                  inspectionStartsAt: Date.now(), // Already in progress
+                });
+                // Also send inspection_end immediately since they're rejoining mid-round
+                socket.emit('inspection_end', { solveStartsAt: Date.now() });
+              }
+            }
+          }
+          break;
+        }
+      }
     } catch (error) {
       socket.emit('error', { code: 'AUTH_INVALID', message: 'Invalid authentication' });
       socket.disconnect();
@@ -107,23 +176,35 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
       this.matchmakingService.removeFromQueue(socket.userId);
     }
 
-    // Handle match disconnect
-    if (socket.matchId) {
+    // Handle match disconnect - notify opponent if they're still connected
+    if (socket.matchId && socket.userId) {
       const match = this.activeMatches.get(socket.matchId);
       if (match) {
-        const opponentSocket =
-          socket.playerNumber === 1 ? match.player2Socket : match.player1Socket;
+        const isPlayer1 = socket.userId === match.player1Id;
+        const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
+        const opponentSocket = this.findSocketByUserId(opponentId);
         if (opponentSocket) {
           opponentSocket.emit('opponent_disconnect', {});
         }
-        // Mark match as abandoned after timeout
-        setTimeout(async () => {
-          const currentMatch = this.activeMatches.get(socket.matchId!);
+
+        // Store the abandon timeout so it can be cancelled on reconnect
+        const matchId = socket.matchId;
+        const abandonTimeout = setTimeout(async () => {
+          const currentMatch = this.activeMatches.get(matchId);
           if (currentMatch) {
-            await this.matchesService.abandonMatch(socket.matchId!);
-            this.activeMatches.delete(socket.matchId!);
+            console.log(`Abandoning match ${matchId} due to disconnect timeout`);
+            await this.matchesService.abandonMatch(matchId);
+            this.activeMatches.delete(matchId);
           }
         }, 30000); // 30 second grace period
+
+        // Store timeout on the appropriate player
+        if (isPlayer1) {
+          match.player1AbandonTimeout = abandonTimeout;
+        } else {
+          match.player2AbandonTimeout = abandonTimeout;
+        }
+        console.log(`Set abandon timeout for ${isPlayer1 ? 'player1' : 'player2'} (${socket.username}) on match ${matchId}`);
       }
     }
   }
@@ -175,20 +256,21 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
 
   @SubscribeMessage('ready')
   async handleReady(@ConnectedSocket() socket: AuthenticatedSocket) {
-    if (!socket.matchId) return;
+    if (!socket.matchId || !socket.userId) return;
 
     const match = this.activeMatches.get(socket.matchId);
     if (!match) return;
 
-    if (socket.playerNumber === 1) {
+    const isPlayer1 = socket.userId === match.player1Id;
+    if (isPlayer1) {
       match.player1Ready = true;
     } else {
       match.player2Ready = true;
     }
 
     // Notify opponent
-    const opponentSocket =
-      socket.playerNumber === 1 ? match.player2Socket : match.player1Socket;
+    const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
+    const opponentSocket = this.findSocketByUserId(opponentId);
     opponentSocket?.emit('opponent_ready', {});
 
     // If both ready, start next round
@@ -202,11 +284,18 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
     @ConnectedSocket() socket: AuthenticatedSocket,
     @MessageBody() data: { seq: number; move: string; clientTs: number },
   ) {
-    if (!socket.matchId || !socket.userId) return;
+    if (!socket.matchId || !socket.userId) {
+      console.log('Move rejected - no matchId or userId', { matchId: socket.matchId, userId: socket.userId });
+      return;
+    }
 
     const match = this.activeMatches.get(socket.matchId);
-    if (!match) return;
+    if (!match) {
+      console.log('Move rejected - match not found', { matchId: socket.matchId });
+      return;
+    }
 
+    console.log(`Move from ${socket.username}: ${data.move} (seq: ${data.seq})`);
     const serverTs = Date.now();
 
     // Record move in database
@@ -218,8 +307,15 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
     );
 
     // Relay to opponent
-    const opponentSocket =
-      socket.playerNumber === 1 ? match.player2Socket : match.player1Socket;
+    const isPlayer1 = socket.userId === match.player1Id;
+    const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
+    const opponentSocket = this.findSocketByUserId(opponentId);
+
+    if (opponentSocket) {
+      console.log(`Relaying move to opponent: ${data.move}`);
+    } else {
+      console.log(`Could not find opponent socket for userId: ${opponentId}`);
+    }
 
     opponentSocket?.emit('opponent_move', {
       seq: data.seq,
@@ -244,8 +340,9 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
     if (!result) return;
 
     // Notify opponent of completion
-    const opponentSocket =
-      socket.playerNumber === 1 ? match.player2Socket : match.player1Socket;
+    const isPlayer1 = socket.userId === match.player1Id;
+    const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
+    const opponentSocket = this.findSocketByUserId(opponentId);
     opponentSocket?.emit('opponent_done', { timeMs: result.timeMs });
 
     // Check if round is complete
@@ -289,29 +386,35 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
       puzzleSize,
     );
 
-    // Find sockets
-    const p1Socket = this.findSocketByUserId(player1.userId) as AuthenticatedSocket;
-    const p2Socket = this.findSocketByUserId(player2.userId) as AuthenticatedSocket;
+    // Find sockets using socketId from queue entry
+    // Cast sockets to Map since TypeScript types are incorrect for namespace
+    const socketsMap = this.server?.sockets as unknown as Map<string, Socket>;
+    const p1Socket = socketsMap?.get(player1.socketId) as AuthenticatedSocket;
+    const p2Socket = socketsMap?.get(player2.socketId) as AuthenticatedSocket;
 
     if (!p1Socket || !p2Socket) {
-      console.error('Could not find sockets for matched players');
+      console.error('Could not find sockets for matched players', {
+        p1SocketId: player1.socketId,
+        p2SocketId: player2.socketId,
+        serverExists: !!this.server,
+        socketsExists: !!this.server?.sockets,
+      });
       await this.matchesService.abandonMatch(match.id);
       return;
     }
 
-    // Set up match state
+    // Set up match state on sockets
     p1Socket.matchId = match.id;
-    p1Socket.playerNumber = 1;
     p2Socket.matchId = match.id;
-    p2Socket.playerNumber = 2;
 
-    // Join match room
+    // Join match room (for reconnection support)
     p1Socket.join(match.id);
     p2Socket.join(match.id);
 
+    // Store userIds, not socket refs (sockets can reconnect with new IDs)
     this.activeMatches.set(match.id, {
-      player1Socket: p1Socket,
-      player2Socket: p2Socket,
+      player1Id: player1.userId,
+      player2Id: player2.userId,
       player1Ready: false,
       player2Ready: false,
       currentRound: 0,
@@ -361,15 +464,20 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
 
     const inspectionStartsAt = Date.now() + 500; // 500ms buffer for network latency
 
-    // Notify both players
+    // Notify both players (look up sockets dynamically)
     const roundData = {
       round: matchState.currentRound,
       scramble: solve.scramble,
       inspectionStartsAt,
     };
 
-    matchState.player1Socket.emit('round_start', roundData);
-    matchState.player2Socket.emit('round_start', roundData);
+    const p1Socket = this.findSocketByUserId(matchState.player1Id);
+    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+
+    console.log('Starting round', { matchId, round: matchState.currentRound, p1Found: !!p1Socket, p2Found: !!p2Socket });
+
+    p1Socket?.emit('round_start', roundData);
+    p2Socket?.emit('round_start', roundData);
 
     // Set timer for inspection end
     matchState.inspectionTimer = setTimeout(
@@ -384,15 +492,18 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
 
     const solveStartsAt = Date.now();
 
-    matchState.player1Socket.emit('inspection_end', { solveStartsAt });
-    matchState.player2Socket.emit('inspection_end', { solveStartsAt });
+    const p1Socket = this.findSocketByUserId(matchState.player1Id);
+    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+
+    p1Socket?.emit('inspection_end', { solveStartsAt });
+    p2Socket?.emit('inspection_end', { solveStartsAt });
   }
 
   private async handleRoundComplete(
     matchId: string,
     matchState: {
-      player1Socket: AuthenticatedSocket;
-      player2Socket: AuthenticatedSocket;
+      player1Id: string;
+      player2Id: string;
       currentRound: number;
     },
     result: {
@@ -409,8 +520,12 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
       clearTimeout(state.inspectionTimer);
     }
 
+    // Look up sockets dynamically
+    const p1Socket = this.findSocketByUserId(matchState.player1Id);
+    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+
     // Send results to both players
-    matchState.player1Socket.emit('solve_result', {
+    p1Socket?.emit('solve_result', {
       round: matchState.currentRound,
       yourTime: result.p1Time,
       opponentTime: result.p2Time,
@@ -418,7 +533,7 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
       scores: { you: result.scores.p1, opponent: result.scores.p2 },
     });
 
-    matchState.player2Socket.emit('solve_result', {
+    p2Socket?.emit('solve_result', {
       round: matchState.currentRound,
       yourTime: result.p2Time,
       opponentTime: result.p1Time,
@@ -452,19 +567,31 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
     const matchState = this.activeMatches.get(matchId);
     if (!matchState) return;
 
+    // Clear any pending abandon timeouts
+    if (matchState.player1AbandonTimeout) {
+      clearTimeout(matchState.player1AbandonTimeout);
+    }
+    if (matchState.player2AbandonTimeout) {
+      clearTimeout(matchState.player2AbandonTimeout);
+    }
+
     const result = await this.matchesService.completeMatch(matchId);
 
+    // Look up sockets dynamically
+    const p1Socket = this.findSocketByUserId(matchState.player1Id);
+    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+
     // Send final results
-    matchState.player1Socket.emit('match_end', {
-      winner: result.winnerId === matchState.player1Socket.userId ? 'you' : 'opponent',
+    p1Socket?.emit('match_end', {
+      winner: result.winnerId === matchState.player1Id ? 'you' : 'opponent',
       finalScores: { you: result.p1Score, opponent: result.p2Score },
       mmrDelta: result.p1MmrDelta,
       newMmr: result.p1NewMmr,
       newLeague: result.p1NewLeague,
     });
 
-    matchState.player2Socket.emit('match_end', {
-      winner: result.winnerId === matchState.player2Socket.userId ? 'you' : 'opponent',
+    p2Socket?.emit('match_end', {
+      winner: result.winnerId === matchState.player2Id ? 'you' : 'opponent',
       finalScores: { you: result.p2Score, opponent: result.p1Score },
       mmrDelta: result.p2MmrDelta,
       newMmr: result.p2NewMmr,
@@ -473,17 +600,20 @@ export class MatchmakingGateway implements OnGatewayConnection, OnGatewayDisconn
 
     // Clean up match state after delay
     setTimeout(() => {
-      matchState.player1Socket.matchId = undefined;
-      matchState.player1Socket.playerNumber = undefined;
-      matchState.player2Socket.matchId = undefined;
-      matchState.player2Socket.playerNumber = undefined;
+      const p1 = this.findSocketByUserId(matchState.player1Id) as AuthenticatedSocket;
+      const p2 = this.findSocketByUserId(matchState.player2Id) as AuthenticatedSocket;
+      if (p1) p1.matchId = undefined;
+      if (p2) p2.matchId = undefined;
       this.activeMatches.delete(matchId);
     }, 10000);
   }
 
   private findSocketByUserId(userId: string): Socket | undefined {
-    const sockets = this.server.sockets.sockets;
-    for (const [, socket] of sockets) {
+    if (!this.server) return undefined;
+
+    // When using a namespace, this.server.sockets is a Map<SocketId, Socket>
+    const socketsMap = this.server.sockets as unknown as Map<string, Socket>;
+    for (const [, socket] of socketsMap) {
       if ((socket as AuthenticatedSocket).userId === userId) {
         return socket;
       }
