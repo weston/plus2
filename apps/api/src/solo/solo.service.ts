@@ -245,29 +245,40 @@ export class SoloService {
 
     const playedSessionIds = playedRaces.map(r => r.ghostSessionId);
 
-    const query = this.sessionRepository
+    // First, get just the session ID with RANDOM() ordering
+    // PostgreSQL doesn't allow ORDER BY RANDOM() with SELECT DISTINCT when using joins
+    const idQuery = this.sessionRepository
       .createQueryBuilder('session')
-      .leftJoinAndSelect('session.solves', 'solves')
+      .select('session.id')
       .where('session.puzzleSize = :puzzleSize', { puzzleSize })
       .andWhere('session.status = :status', { status: 'completed' })
       .andWhere('session.userId != :excludeUserId', { excludeUserId });
 
     // Exclude already-played ghost sessions
     if (playedSessionIds.length > 0) {
-      query.andWhere('session.id NOT IN (:...playedSessionIds)', { playedSessionIds });
+      idQuery.andWhere('session.id NOT IN (:...playedSessionIds)', { playedSessionIds });
     }
 
     // If MMR provided, try to find sessions from similar skill players
     if (aroundMmr !== undefined) {
-      query.andWhere('session.mmrAtRecording BETWEEN :minMmr AND :maxMmr', {
+      idQuery.andWhere('session.mmrAtRecording BETWEEN :minMmr AND :maxMmr', {
         minMmr: aroundMmr - 200,
         maxMmr: aroundMmr + 200,
       });
     }
 
-    query.orderBy('RANDOM()').take(1);
+    idQuery.orderBy('RANDOM()').limit(1);
 
-    return query.getOne();
+    const result = await idQuery.getRawOne();
+    if (!result) {
+      return null;
+    }
+
+    // Now load the full session with relations
+    return this.sessionRepository.findOne({
+      where: { id: result.session_id },
+      relations: ['solves'],
+    });
   }
 
   async getUserSessions(
@@ -344,18 +355,31 @@ export class SoloService {
 
     const playedSessionIds = playedRaces.map(r => r.ghostSessionId);
 
-    const query = this.sessionRepository
+    // First, get just the session ID with RANDOM() ordering
+    // PostgreSQL doesn't allow ORDER BY RANDOM() with SELECT DISTINCT when using joins
+    const idQuery = this.sessionRepository
       .createQueryBuilder('session')
-      .leftJoinAndSelect('session.solves', 'solves')
+      .select('session.id')
       .where('session.userId = :ghostUserId', { ghostUserId })
       .andWhere('session.puzzleSize = :puzzleSize', { puzzleSize })
       .andWhere('session.status = :status', { status: 'completed' });
 
     if (playedSessionIds.length > 0) {
-      query.andWhere('session.id NOT IN (:...playedSessionIds)', { playedSessionIds });
+      idQuery.andWhere('session.id NOT IN (:...playedSessionIds)', { playedSessionIds });
     }
 
-    const ghostSession = await query.orderBy('RANDOM()').take(1).getOne();
+    idQuery.orderBy('RANDOM()').limit(1);
+
+    const result = await idQuery.getRawOne();
+    if (!result) {
+      return null;
+    }
+
+    // Now load the full session with relations
+    const ghostSession = await this.sessionRepository.findOne({
+      where: { id: result.session_id },
+      relations: ['solves'],
+    });
 
     if (!ghostSession) {
       return null;
