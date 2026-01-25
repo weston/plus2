@@ -50,6 +50,9 @@ export class User {
   @Column({ name: 'oauth_id', nullable: true, length: 255 })
   oauthId: string;
 
+  @Column({ nullable: true, length: 2 })
+  country: string; // ISO 3166-1 alpha-2 code (e.g., 'US', 'GB', 'JP')
+
   @OneToMany(() => UserPuzzleStats, (stats) => stats.user)
   puzzleStats: UserPuzzleStats[];
 

@@ -89,6 +89,10 @@ resource "aws_ecs_task_definition" "api" {
         {
           name  = "JWT_SECRET"
           value = var.jwt_secret
+        },
+        {
+          name  = "JWT_EXPIRES_IN"
+          value = "14d"
         }
       ]
 

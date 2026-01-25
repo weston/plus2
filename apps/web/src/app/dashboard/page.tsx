@@ -82,8 +82,8 @@ export default function DashboardPage() {
           </Link>
 
           <div className="flex items-center gap-4">
-            <Link href="/practice" className="text-gray-400 hover:text-white">
-              Practice
+            <Link href={`/profile/${user.username}`} className="text-gray-400 hover:text-white">
+              Profile
             </Link>
             <Link href="/leaderboard" className="text-gray-400 hover:text-white">
               Leaderboard
@@ -159,19 +159,34 @@ export default function DashboardPage() {
               >
                 {phase === 'queuing' ? (
                   <span className="flex items-center justify-center gap-2">
-                    <span className="animate-spin">◌</span>
+                    <span className="animate-spin">&#9696;</span>
                     Cancel ({estimatedWait}s)
                   </span>
                 ) : (
-                  'Find Match'
+                  'Find Live Match'
                 )}
               </button>
 
               <Link
-                href="/practice"
-                className="flex-1 py-4 rounded-lg font-bold text-lg text-center bg-blue-600 hover:bg-blue-700 transition-all"
+                href="/challenge"
+                className="flex-1 py-4 rounded-lg font-bold text-lg text-center bg-purple-600 hover:bg-purple-700 transition-all"
               >
-                Practice
+                Challenge
+              </Link>
+            </div>
+
+            <div className="flex gap-3 mt-3">
+              <Link
+                href="/solo"
+                className="flex-1 py-3 rounded-lg font-medium text-center bg-orange-600 hover:bg-orange-700 transition-all"
+              >
+                Ghost Mode
+              </Link>
+              <Link
+                href="/practice"
+                className="flex-1 py-3 rounded-lg font-medium text-center bg-gray-700 hover:bg-gray-600 transition-all"
+              >
+                Zen Mode
               </Link>
             </div>
           </div>

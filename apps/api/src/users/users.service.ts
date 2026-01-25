@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from './user.entity';
 import { UserPuzzleStats } from './user-puzzle-stats.entity';
+import { Match } from '../matches/match.entity';
 import { PuzzleSize, getLeagueFromRating, calculateRatingChange } from '@plus2/shared';
 
 @Injectable()
@@ -12,6 +13,8 @@ export class UsersService {
     private userRepository: Repository<User>,
     @InjectRepository(UserPuzzleStats)
     private statsRepository: Repository<UserPuzzleStats>,
+    @InjectRepository(Match)
+    private matchRepository: Repository<Match>,
   ) {}
 
   async findById(id: string): Promise<User> {
@@ -40,6 +43,38 @@ export class UsersService {
       username: user.username,
       mmr: user.mmr,
       league: user.league,
+      country: user.country,
+      createdAt: user.createdAt.toISOString(),
+      stats: user.puzzleStats.map((s) => ({
+        id: s.id,
+        puzzleSize: s.puzzleSize,
+        mmr: s.mmr,
+        league: s.league,
+        gamesPlayed: s.gamesPlayed,
+        gamesWon: s.gamesWon,
+        solvesCompleted: s.solvesCompleted,
+        solvesWon: s.solvesWon,
+        bestTimeMs: s.bestTimeMs,
+        avgTimeMs: s.avgTimeMs,
+        isProvisional: s.isProvisional,
+      })),
+    };
+  }
+
+  async getProfileByUsername(username: string) {
+    const user = await this.userRepository.findOne({
+      where: { username },
+      relations: ['puzzleStats'],
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    return {
+      id: user.id,
+      username: user.username,
+      mmr: user.mmr,
+      league: user.league,
+      country: user.country,
       createdAt: user.createdAt.toISOString(),
       stats: user.puzzleStats.map((s) => ({
         id: s.id,
@@ -156,6 +191,35 @@ export class UsersService {
     await this.statsRepository.save(stats);
   }
 
+  /**
+   * Update rating directly (for solo mode with pre-calculated MMR)
+   */
+  async updateRatingDirect(
+    userId: string,
+    puzzleSize: PuzzleSize,
+    newMmr: number,
+    won: boolean,
+  ): Promise<void> {
+    const stats = await this.getPuzzleStats(userId, puzzleSize);
+    const newLeague = getLeagueFromRating(newMmr);
+
+    stats.mmr = newMmr;
+    stats.league = newLeague;
+    stats.gamesPlayed += 1;
+    if (won) stats.gamesWon += 1;
+
+    // Update provisional status
+    if (stats.isProvisional) {
+      stats.provisionalGamesRemaining -= 1;
+      if (stats.provisionalGamesRemaining <= 0) {
+        stats.isProvisional = false;
+      }
+    }
+
+    await this.statsRepository.save(stats);
+    await this.updateGlobalMmr(userId);
+  }
+
   private async updateGlobalMmr(userId: string) {
     const allStats = await this.statsRepository.find({ where: { userId } });
     const maxMmr = Math.max(...allStats.map((s) => s.mmr));
@@ -180,5 +244,59 @@ export class UsersService {
     const merged = { ...user.preferences, ...preferences };
     await this.userRepository.update(userId, { preferences: merged });
     return merged;
+  }
+
+  async updateCountry(userId: string, country: string) {
+    await this.userRepository.update(userId, { country });
+    return { country };
+  }
+
+  async getMmrHistory(userId: string): Promise<{ date: string; mmr: number; matchId: string }[]> {
+    // Get all completed matches for the user
+    const matches = await this.matchRepository.find({
+      where: [
+        { player1Id: userId, status: 'completed' },
+        { player2Id: userId, status: 'completed' },
+      ],
+      order: { endedAt: 'ASC' },
+    });
+
+    const history: { date: string; mmr: number; matchId: string }[] = [];
+
+    for (const match of matches) {
+      const isPlayer1 = match.player1Id === userId;
+      const mmrAfter = isPlayer1 ? match.player1MmrAfter : match.player2MmrAfter;
+
+      if (mmrAfter && match.endedAt) {
+        history.push({
+          date: match.endedAt.toISOString(),
+          mmr: mmrAfter,
+          matchId: match.id,
+        });
+      }
+    }
+
+    return history;
+  }
+
+  /**
+   * Update a user's MMR directly (used for ghost races)
+   */
+  async updateMmr(userId: string, puzzleSize: PuzzleSize, newMmr: number): Promise<void> {
+    const stats = await this.statsRepository.findOne({
+      where: { userId, puzzleSize },
+    });
+
+    if (stats) {
+      stats.mmr = newMmr;
+      stats.league = getLeagueFromRating(newMmr);
+      await this.statsRepository.save(stats);
+    }
+
+    // Also update global MMR on user entity
+    const user = await this.findById(userId);
+    user.mmr = newMmr;
+    user.league = getLeagueFromRating(newMmr);
+    await this.userRepository.save(user);
   }
 }

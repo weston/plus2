@@ -10,7 +10,7 @@ import { MatchmakingModule } from '../matchmaking/matchmaking.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([Match, Solve]),
-    UsersModule,
+    forwardRef(() => UsersModule),
     forwardRef(() => MatchmakingModule),
   ],
   controllers: [MatchesController],

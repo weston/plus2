@@ -16,7 +16,7 @@ export const LEAGUE_TIERS = [
 ] as const;
 export type LeagueTier = (typeof LEAGUE_TIERS)[number];
 
-export const MATCH_STATUSES = ['pending', 'in_progress', 'completed', 'abandoned'] as const;
+export const MATCH_STATUSES = ['pending', 'in_progress', 'completed', 'abandoned', 'forfeited'] as const;
 export type MatchStatus = (typeof MATCH_STATUSES)[number];
 
 export const SOLVE_STATUSES = ['pending', 'inspecting', 'solving', 'completed', 'dnf'] as const;
@@ -343,3 +343,25 @@ export const SCRAMBLE_LENGTHS: Record<PuzzleSize, number> = {
   '4x4': 44,
   '5x5': 60,
 };
+
+// =============================================================================
+// SOLO MODE CONSTANTS
+// =============================================================================
+
+// Target times in ms for each league (3x3). These represent "ghost" opponent times.
+export const SOLO_TARGET_TIMES_3X3: Record<LeagueTier, number> = {
+  bronze: 60000,      // 60s
+  silver: 40000,      // 40s
+  gold: 25000,        // 25s
+  platinum: 18000,    // 18s
+  diamond: 14000,     // 14s
+  master: 11000,      // 11s
+  grandmaster: 9000,  // 9s
+};
+
+// K-factor multiplier for solo mode (lower than real matches to incentivize PvP)
+export const SOLO_K_FACTOR_MULTIPLIER = 0.5;
+
+// Session statuses
+export const SOLO_SESSION_STATUSES = ['in_progress', 'completed', 'abandoned'] as const;
+export type SoloSessionStatus = (typeof SOLO_SESSION_STATUSES)[number];

@@ -8,6 +8,7 @@ import { User } from '../users/user.entity';
 import { UserPuzzleStats } from '../users/user-puzzle-stats.entity';
 import { MatchesModule } from '../matches/matches.module';
 import { UsersModule } from '../users/users.module';
+import { SoloModule } from '../solo/solo.module';
 
 @Module({
   imports: [
@@ -20,7 +21,8 @@ import { UsersModule } from '../users/users.module';
       }),
     }),
     forwardRef(() => MatchesModule),
-    UsersModule,
+    forwardRef(() => SoloModule),
+    forwardRef(() => UsersModule),
   ],
   providers: [MatchmakingGateway, MatchmakingService],
   exports: [MatchmakingService],

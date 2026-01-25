@@ -42,8 +42,8 @@ export class Solve {
   @Column({ name: 'p1_solve_end_at', nullable: true })
   p1SolveEndAt: Date;
 
-  @Column({ name: 'p1_time_ms', nullable: true })
-  p1TimeMs: number;
+  @Column({ name: 'p1_time_ms', type: 'integer', nullable: true })
+  p1TimeMs: number | null;
 
   @Column({ name: 'p1_moves', type: 'simple-json', default: '[]' })
   p1Moves: MoveRecord[];
@@ -70,8 +70,8 @@ export class Solve {
   @Column({ name: 'p2_solve_end_at', nullable: true })
   p2SolveEndAt: Date;
 
-  @Column({ name: 'p2_time_ms', nullable: true })
-  p2TimeMs: number;
+  @Column({ name: 'p2_time_ms', type: 'integer', nullable: true })
+  p2TimeMs: number | null;
 
   @Column({ name: 'p2_moves', type: 'simple-json', default: '[]' })
   p2Moves: MoveRecord[];

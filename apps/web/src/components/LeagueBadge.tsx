@@ -2,9 +2,10 @@
 
 import type { LeagueTier } from '@plus2/shared';
 
-interface LeagueBadgeProps {
+export interface LeagueBadgeProps {
   league: LeagueTier;
   size?: 'sm' | 'md' | 'lg';
+  className?: string;
 }
 
 const leagueColors: Record<LeagueTier, string> = {
@@ -23,10 +24,10 @@ const sizes = {
   lg: 'px-4 py-1.5 text-base',
 };
 
-export function LeagueBadge({ league, size = 'md' }: LeagueBadgeProps) {
+export function LeagueBadge({ league, size = 'md', className = '' }: LeagueBadgeProps) {
   return (
     <span
-      className={`inline-flex items-center font-semibold rounded-full capitalize ${leagueColors[league]} ${sizes[size]}`}
+      className={`inline-flex items-center font-semibold rounded-full capitalize ${leagueColors[league]} ${sizes[size]} ${className}`}
     >
       {league}
     </span>

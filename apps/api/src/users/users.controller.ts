@@ -10,7 +10,8 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { UsersService } from './users.service';
-import { IsString, MinLength, MaxLength, Matches, IsNumber, IsOptional, IsObject, Min, Max } from 'class-validator';
+import { IsString, MinLength, MaxLength, Matches, IsNumber, IsOptional, IsObject, Min, Max, Length } from 'class-validator';
+import { MatchesService } from '../matches/matches.service';
 
 class UpdateUsernameDto {
   @IsString()
@@ -32,9 +33,19 @@ class UpdatePreferencesDto {
   cubeColors?: Record<string, string>;
 }
 
+class UpdateCountryDto {
+  @IsString()
+  @Length(2, 2)
+  @Matches(/^[A-Z]{2}$/)
+  country: string;
+}
+
 @Controller('users')
 export class UsersController {
-  constructor(private usersService: UsersService) {}
+  constructor(
+    private usersService: UsersService,
+    private matchesService: MatchesService,
+  ) {}
 
   @Get('me')
   @UseGuards(JwtAuthGuard)
@@ -81,5 +92,32 @@ export class UsersController {
     @Body() dto: UpdatePreferencesDto,
   ) {
     return this.usersService.updatePreferences(req.user.id, dto);
+  }
+
+  @Put('me/country')
+  @UseGuards(JwtAuthGuard)
+  async updateCountry(
+    @Request() req: { user: { id: string } },
+    @Body() dto: UpdateCountryDto,
+  ) {
+    return this.usersService.updateCountry(req.user.id, dto.country);
+  }
+
+  @Get('profile/:username')
+  async getProfileByUsername(@Param('username') username: string) {
+    return this.usersService.getProfileByUsername(username);
+  }
+
+  @Get(':id/matches')
+  async getUserMatches(
+    @Param('id') id: string,
+    @Param('page') page: number = 1,
+  ) {
+    return this.matchesService.getUserMatches(id, page, 20);
+  }
+
+  @Get(':id/mmr-history')
+  async getMmrHistory(@Param('id') id: string) {
+    return this.usersService.getMmrHistory(id);
   }
 }

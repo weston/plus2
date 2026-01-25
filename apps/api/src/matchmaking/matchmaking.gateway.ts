@@ -10,9 +10,10 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
-import { forwardRef, Inject } from '@nestjs/common';
-import { MatchmakingService, QueueEntry } from './matchmaking.service';
+import { forwardRef, Inject, Optional } from '@nestjs/common';
+import { MatchmakingService, QueueEntry, Challenge } from './matchmaking.service';
 import { MatchesService } from '../matches/matches.service';
+import { SoloService } from '../solo/solo.service';
 import { PuzzleSize, PUZZLE_SIZES, INSPECTION_DURATION_MS } from '@plus2/shared';
 
 interface AuthenticatedSocket extends Socket {
@@ -20,6 +21,8 @@ interface AuthenticatedSocket extends Socket {
   username?: string;
   matchId?: string;
   playerNumber?: 1 | 2;
+  soloSessionId?: string;
+  ghostRaceId?: string;
 }
 
 @WebSocketGateway({
@@ -34,6 +37,12 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   @WebSocketServer()
   server: Server;
 
+  // Rotation moves don't start the solve timer
+  private readonly ROTATION_MOVES = ['x', "x'", 'x2', 'y', "y'", 'y2', 'z', "z'", 'z2'];
+
+  // 10 minute solve timeout
+  private readonly SOLVE_TIMEOUT_MS = 10 * 60 * 1000;
+
   // Map matchId -> match state (stores userIds, not socket refs which can become stale)
   private activeMatches: Map<
     string,
@@ -46,17 +55,64 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       inspectionTimer?: NodeJS.Timeout;
       player1AbandonTimeout?: NodeJS.Timeout;
       player2AbandonTimeout?: NodeJS.Timeout;
+      player1SolveStartedAt?: number;
+      player2SolveStartedAt?: number;
+      player1SolveTimeout?: NodeJS.Timeout;
+      player2SolveTimeout?: NodeJS.Timeout;
     }
   > = new Map();
 
   // Matchmaking interval
   private matchmakingInterval: NodeJS.Timeout | null = null;
 
+  // Active solo recording sessions (sessionId -> session state)
+  private activeSoloSessions: Map<
+    string,
+    {
+      userId: string;
+      currentRound: number;
+      totalRounds: number;
+      inspectionTimer?: NodeJS.Timeout;
+      solveTimeout?: NodeJS.Timeout;
+      solveStartedAt?: number;
+    }
+  > = new Map();
+
+  // Active ghost races (raceId -> race state)
+  private activeGhostRaces: Map<
+    string,
+    {
+      oderId: string;
+      puzzleSize: PuzzleSize;
+      ghostSessionId: string;
+      ghostUserId: string;
+      ghostUsername: string;
+      ghostMmrAtRecording: number;
+      isOldGhost: boolean;
+      currentRound: number;
+      totalRounds: number;
+      userTimes: (number | null)[];
+      ghostTimes: (number | null)[];
+      ghostSolves: Array<{
+        scramble: string;
+        timeMs: number | null;
+        moves: Array<{ move: string; serverTs?: number }>;
+        inspectionStartAt: number;
+      }>;
+      inspectionTimer?: NodeJS.Timeout;
+      solveTimeout?: NodeJS.Timeout;
+      solveStartedAt?: number;
+    }
+  > = new Map();
+
   constructor(
     private jwtService: JwtService,
     private matchmakingService: MatchmakingService,
     @Inject(forwardRef(() => MatchesService))
     private matchesService: MatchesService,
+    @Optional()
+    @Inject(forwardRef(() => SoloService))
+    private soloService: SoloService,
   ) {}
 
   afterInit() {
@@ -171,9 +227,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   handleDisconnect(socket: AuthenticatedSocket) {
     console.log(`User ${socket.username || socket.id} disconnected`);
 
-    // Remove from queue
+    // Remove from queue and delete any pending challenges
     if (socket.userId) {
       this.matchmakingService.removeFromQueue(socket.userId);
+      this.matchmakingService.deleteChallengeByCreator(socket.userId);
     }
 
     // Handle match disconnect - notify opponent if they're still connected
@@ -189,12 +246,12 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
         // Store the abandon timeout so it can be cancelled on reconnect
         const matchId = socket.matchId;
+        const forfeitingUserId = socket.userId;
         const abandonTimeout = setTimeout(async () => {
           const currentMatch = this.activeMatches.get(matchId);
           if (currentMatch) {
-            console.log(`Abandoning match ${matchId} due to disconnect timeout`);
-            await this.matchesService.abandonMatch(matchId);
-            this.activeMatches.delete(matchId);
+            console.log(`Forfeiting match ${matchId} due to disconnect timeout by user ${forfeitingUserId}`);
+            await this.handleForfeit(matchId, forfeitingUserId);
           }
         }, 30000); // 30 second grace period
 
@@ -298,6 +355,36 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     console.log(`Move from ${socket.username}: ${data.move} (seq: ${data.seq})`);
     const serverTs = Date.now();
 
+    const isPlayer1 = socket.userId === match.player1Id;
+    const isRotation = this.ROTATION_MOVES.includes(data.move);
+
+    // Check if this is the first non-rotation move (starts the solve)
+    const playerSolveStarted = isPlayer1 ? match.player1SolveStartedAt : match.player2SolveStartedAt;
+    let solveJustStarted = false;
+
+    if (!isRotation && !playerSolveStarted) {
+      // This is the first non-rotation move - player started solving
+      // Capture these values for the timeout callback
+      const matchIdForTimeout = socket.matchId;
+      const userIdForTimeout = socket.userId;
+      if (isPlayer1) {
+        match.player1SolveStartedAt = serverTs;
+        // Set 10-minute timeout for this solve
+        match.player1SolveTimeout = setTimeout(
+          () => this.handleSolveTimeout(matchIdForTimeout, userIdForTimeout),
+          this.SOLVE_TIMEOUT_MS,
+        );
+      } else {
+        match.player2SolveStartedAt = serverTs;
+        match.player2SolveTimeout = setTimeout(
+          () => this.handleSolveTimeout(matchIdForTimeout, userIdForTimeout),
+          this.SOLVE_TIMEOUT_MS,
+        );
+      }
+      solveJustStarted = true;
+      console.log(`Player ${socket.username} started solving at ${serverTs}`);
+    }
+
     // Record move in database
     await this.matchesService.recordMove(
       socket.matchId,
@@ -307,7 +394,6 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     );
 
     // Relay to opponent
-    const isPlayer1 = socket.userId === match.player1Id;
     const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
     const opponentSocket = this.findSocketByUserId(opponentId);
 
@@ -315,6 +401,13 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       console.log(`Relaying move to opponent: ${data.move}`);
     } else {
       console.log(`Could not find opponent socket for userId: ${opponentId}`);
+    }
+
+    // If solve just started, notify opponent with the start time
+    if (solveJustStarted && opponentSocket) {
+      opponentSocket.emit('opponent_started', {
+        startedAt: serverTs,
+      });
     }
 
     opponentSocket?.emit('opponent_move', {
@@ -331,6 +424,16 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const match = this.activeMatches.get(socket.matchId);
     if (!match) return;
 
+    // Clear solve timeout for this player
+    const isPlayer1 = socket.userId === match.player1Id;
+    if (isPlayer1 && match.player1SolveTimeout) {
+      clearTimeout(match.player1SolveTimeout);
+      match.player1SolveTimeout = undefined;
+    } else if (!isPlayer1 && match.player2SolveTimeout) {
+      clearTimeout(match.player2SolveTimeout);
+      match.player2SolveTimeout = undefined;
+    }
+
     const result = await this.matchesService.recordSolveComplete(
       socket.matchId,
       match.currentRound,
@@ -340,7 +443,6 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (!result) return;
 
     // Notify opponent of completion
-    const isPlayer1 = socket.userId === match.player1Id;
     const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
     const opponentSocket = this.findSocketByUserId(opponentId);
     opponentSocket?.emit('opponent_done', { timeMs: result.timeMs });
@@ -377,6 +479,635 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   async handleRequeue(@ConnectedSocket() socket: AuthenticatedSocket) {
     return this.handleRematch(socket);
   }
+
+  @SubscribeMessage('challenge_create')
+  async handleChallengeCreate(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { puzzleSize: PuzzleSize },
+  ) {
+    if (!socket.userId) {
+      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Not authenticated' });
+      return;
+    }
+
+    if (socket.matchId) {
+      socket.emit('error', { code: 'IN_MATCH', message: 'Already in a match' });
+      return;
+    }
+
+    try {
+      const challenge = await this.matchmakingService.createChallenge(
+        socket.userId,
+        socket.id,
+        data.puzzleSize,
+      );
+
+      socket.emit('challenge_created', {
+        code: challenge.code,
+        puzzleSize: challenge.puzzleSize,
+      });
+
+      console.log(`Challenge ${challenge.code} created by ${socket.username}`);
+    } catch (error) {
+      socket.emit('error', { code: 'CHALLENGE_ERROR', message: 'Failed to create challenge' });
+    }
+  }
+
+  @SubscribeMessage('challenge_cancel')
+  handleChallengeCancel(@ConnectedSocket() socket: AuthenticatedSocket) {
+    if (socket.userId) {
+      this.matchmakingService.deleteChallengeByCreator(socket.userId);
+      socket.emit('challenge_cancelled', {});
+    }
+  }
+
+  @SubscribeMessage('challenge_join')
+  async handleChallengeJoin(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { code: string },
+  ) {
+    if (!socket.userId) {
+      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Not authenticated' });
+      return;
+    }
+
+    if (socket.matchId) {
+      socket.emit('error', { code: 'IN_MATCH', message: 'Already in a match' });
+      return;
+    }
+
+    const challenge = this.matchmakingService.getChallenge(data.code);
+    if (!challenge) {
+      socket.emit('error', { code: 'CHALLENGE_NOT_FOUND', message: 'Challenge not found or expired' });
+      return;
+    }
+
+    if (challenge.creatorId === socket.userId) {
+      socket.emit('error', { code: 'CANNOT_JOIN_OWN', message: 'Cannot join your own challenge' });
+      return;
+    }
+
+    // Get joiner's info
+    const joinerStats = await this.matchmakingService.addToQueue(
+      socket.userId,
+      socket.id,
+      challenge.puzzleSize,
+    );
+
+    // Remove from queue immediately (we're creating a direct match)
+    this.matchmakingService.removeFromQueue(socket.userId);
+
+    // Delete the challenge
+    this.matchmakingService.deleteChallenge(data.code);
+
+    // Create the match
+    const creatorEntry: QueueEntry = {
+      userId: challenge.creatorId,
+      socketId: challenge.creatorSocketId,
+      puzzleSize: challenge.puzzleSize,
+      mmr: challenge.creatorMmr,
+      searchRange: 0,
+      joinedAt: challenge.createdAt,
+      username: challenge.creatorUsername,
+      league: challenge.creatorLeague,
+    };
+
+    await this.createMatch(creatorEntry, joinerStats.entry, challenge.puzzleSize);
+  }
+
+  // ==========================================================================
+  // SOLO MODE HANDLERS
+  // ==========================================================================
+
+  @SubscribeMessage('solo_start')
+  async handleSoloStart(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { puzzleSize: PuzzleSize },
+  ) {
+    if (!socket.userId) {
+      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Not authenticated' });
+      return;
+    }
+
+    if (socket.matchId || socket.soloSessionId) {
+      socket.emit('error', { code: 'IN_MATCH', message: 'Already in a match or solo session' });
+      return;
+    }
+
+    if (!this.soloService) {
+      socket.emit('error', { code: 'SOLO_NOT_AVAILABLE', message: 'Solo mode is not available' });
+      return;
+    }
+
+    try {
+      const session = await this.soloService.createSession(socket.userId, data.puzzleSize);
+      socket.soloSessionId = session.id;
+
+      this.activeSoloSessions.set(session.id, {
+        userId: socket.userId,
+        currentRound: 0,
+        totalRounds: session.totalRounds,
+      });
+
+      socket.emit('solo_started', {
+        sessionId: session.id,
+        puzzleSize: session.puzzleSize,
+        totalRounds: session.totalRounds,
+      });
+
+      // Start first round after a short delay
+      setTimeout(() => this.startSoloRound(session.id), 2000);
+
+      console.log(`Solo recording session ${session.id} started by ${socket.username}`);
+    } catch (error) {
+      socket.emit('error', { code: 'SOLO_ERROR', message: 'Failed to start solo session' });
+    }
+  }
+
+  @SubscribeMessage('solo_move')
+  async handleSoloMove(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { seq: number; move: string; clientTs: number },
+  ) {
+    if (!socket.soloSessionId || !socket.userId || !this.soloService) return;
+
+    const session = this.activeSoloSessions.get(socket.soloSessionId);
+    if (!session) return;
+
+    const serverTs = Date.now();
+    const isRotation = this.ROTATION_MOVES.includes(data.move);
+
+    // Check if this is the first non-rotation move
+    if (!isRotation && !session.solveStartedAt) {
+      session.solveStartedAt = serverTs;
+      // Set 10-minute timeout
+      const sessionId = socket.soloSessionId;
+      session.solveTimeout = setTimeout(
+        () => this.handleSoloSolveTimeout(sessionId),
+        this.SOLVE_TIMEOUT_MS,
+      );
+    }
+
+    await this.soloService.recordMove(
+      socket.soloSessionId,
+      session.currentRound,
+      { seq: data.seq, move: data.move, clientTs: data.clientTs, serverTs },
+    );
+  }
+
+  @SubscribeMessage('solo_complete')
+  async handleSoloComplete(@ConnectedSocket() socket: AuthenticatedSocket) {
+    if (!socket.soloSessionId || !socket.userId || !this.soloService) return;
+
+    const session = this.activeSoloSessions.get(socket.soloSessionId);
+    if (!session) return;
+
+    // Clear solve timeout
+    if (session.solveTimeout) {
+      clearTimeout(session.solveTimeout);
+      session.solveTimeout = undefined;
+    }
+
+    const result = await this.soloService.recordSolveComplete(
+      socket.soloSessionId,
+      session.currentRound,
+    );
+
+    if (!result) return;
+
+    socket.emit('solo_solve_result', {
+      round: session.currentRound,
+      timeMs: result.timeMs,
+      completedRounds: session.currentRound,
+      totalRounds: session.totalRounds,
+    });
+
+    if (result.isSessionComplete) {
+      await this.handleSoloSessionComplete(socket.soloSessionId);
+    } else {
+      // Start next round after delay
+      const sessionId = socket.soloSessionId;
+      setTimeout(() => this.startSoloRound(sessionId), 3000);
+    }
+  }
+
+  @SubscribeMessage('solo_abandon')
+  async handleSoloAbandon(@ConnectedSocket() socket: AuthenticatedSocket) {
+    if (!socket.soloSessionId || !this.soloService) return;
+
+    const session = this.activeSoloSessions.get(socket.soloSessionId);
+    if (session) {
+      if (session.inspectionTimer) clearTimeout(session.inspectionTimer);
+      if (session.solveTimeout) clearTimeout(session.solveTimeout);
+    }
+
+    await this.soloService.abandonSession(socket.soloSessionId);
+    this.activeSoloSessions.delete(socket.soloSessionId);
+    socket.soloSessionId = undefined;
+
+    socket.emit('solo_abandoned', {});
+  }
+
+  private async startSoloRound(sessionId: string) {
+    const session = this.activeSoloSessions.get(sessionId);
+    if (!session || !this.soloService) return;
+
+    session.currentRound += 1;
+    session.solveStartedAt = undefined;
+
+    // Clear any existing timeout
+    if (session.solveTimeout) {
+      clearTimeout(session.solveTimeout);
+      session.solveTimeout = undefined;
+    }
+
+    const solve = await this.soloService.startRound(sessionId, session.currentRound);
+    const inspectionStartsAt = Date.now() + 500;
+
+    // Find the socket for this session
+    const socket = this.findSocketBySoloSession(sessionId);
+    if (!socket) return;
+
+    socket.emit('solo_round_start', {
+      round: session.currentRound,
+      totalRounds: session.totalRounds,
+      scramble: solve.scramble,
+      inspectionStartsAt,
+    });
+
+    // Set inspection end timer
+    session.inspectionTimer = setTimeout(
+      () => this.handleSoloInspectionEnd(sessionId),
+      INSPECTION_DURATION_MS + 500,
+    );
+  }
+
+  private handleSoloInspectionEnd(sessionId: string) {
+    const session = this.activeSoloSessions.get(sessionId);
+    if (!session) return;
+
+    const socket = this.findSocketBySoloSession(sessionId);
+    if (!socket) return;
+
+    socket.emit('solo_inspection_end', { solveStartsAt: Date.now() });
+  }
+
+  private async handleSoloSolveTimeout(sessionId: string) {
+    const session = this.activeSoloSessions.get(sessionId);
+    if (!session || !this.soloService) return;
+
+    session.solveTimeout = undefined;
+
+    // Record DNF for timeout
+    const result = await this.soloService.recordSolveComplete(
+      sessionId,
+      session.currentRound,
+      true, // isDnf
+    );
+    if (!result) return;
+
+    const socket = this.findSocketBySoloSession(sessionId);
+    if (!socket) return;
+
+    socket.emit('solo_dnf', { reason: 'timeout' });
+    socket.emit('solo_solve_result', {
+      round: session.currentRound,
+      timeMs: null,
+      completedRounds: session.currentRound,
+      totalRounds: session.totalRounds,
+    });
+
+    if (result.isSessionComplete) {
+      await this.handleSoloSessionComplete(sessionId);
+    } else {
+      setTimeout(() => this.startSoloRound(sessionId), 3000);
+    }
+  }
+
+  private async handleSoloSessionComplete(sessionId: string) {
+    const session = this.activeSoloSessions.get(sessionId);
+    if (!session || !this.soloService) return;
+
+    // Clear timers
+    if (session.inspectionTimer) clearTimeout(session.inspectionTimer);
+    if (session.solveTimeout) clearTimeout(session.solveTimeout);
+
+    const result = await this.soloService.completeSession(sessionId);
+
+    const socket = this.findSocketBySoloSession(sessionId);
+    if (socket) {
+      socket.emit('solo_end', {
+        solves: result.solves,
+        averageTime: result.averageTime,
+      });
+      (socket as AuthenticatedSocket).soloSessionId = undefined;
+    }
+
+    this.activeSoloSessions.delete(sessionId);
+  }
+
+  private findSocketBySoloSession(sessionId: string): Socket | undefined {
+    if (!this.server) return undefined;
+
+    const socketsMap = this.server.sockets as unknown as Map<string, Socket>;
+    for (const [, socket] of socketsMap) {
+      if ((socket as AuthenticatedSocket).soloSessionId === sessionId) {
+        return socket;
+      }
+    }
+    return undefined;
+  }
+
+  // ==========================================================================
+  // GHOST RACE HANDLERS
+  // ==========================================================================
+
+  @SubscribeMessage('ghost_race_start')
+  async handleGhostRaceStart(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { puzzleSize: PuzzleSize },
+  ) {
+    if (!socket.userId) {
+      socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Not authenticated' });
+      return;
+    }
+
+    if (socket.matchId || socket.soloSessionId || socket.ghostRaceId) {
+      socket.emit('error', { code: 'IN_MATCH', message: 'Already in a match or session' });
+      return;
+    }
+
+    if (!this.soloService) {
+      socket.emit('error', { code: 'GHOST_NOT_AVAILABLE', message: 'Ghost mode is not available' });
+      return;
+    }
+
+    try {
+      // Find a ghost to race against
+      const ghostData = await this.soloService.findGhostToRace(socket.userId, data.puzzleSize);
+
+      if (!ghostData) {
+        socket.emit('error', { code: 'NO_GHOSTS', message: 'No ghost opponents available. Try creating some ghost solves first!' });
+        return;
+      }
+
+      const { ghostSession, ghostUser, isOldGhost } = ghostData;
+
+      // Create race ID
+      const raceId = `race_${Date.now()}_${socket.userId}`;
+      socket.ghostRaceId = raceId;
+
+      // Prepare ghost solve data with inspection timing
+      const ghostSolves = ghostSession.solves
+        ?.sort((a, b) => a.roundNumber - b.roundNumber)
+        .map(s => ({
+          scramble: s.scramble,
+          timeMs: s.timeMs,
+          moves: s.moves || [],
+          inspectionStartAt: s.inspectionStartAt?.getTime() || 0,
+        })) || [];
+
+      this.activeGhostRaces.set(raceId, {
+        oderId: socket.userId,
+        puzzleSize: data.puzzleSize,
+        ghostSessionId: ghostSession.id,
+        ghostUserId: ghostUser.id,
+        ghostUsername: ghostUser.username,
+        ghostMmrAtRecording: ghostSession.mmrAtRecording || 1000,
+        isOldGhost,
+        currentRound: 0,
+        totalRounds: ghostSolves.length,
+        userTimes: [],
+        ghostTimes: ghostSolves.map(s => s.timeMs),
+        ghostSolves,
+      });
+
+      socket.emit('ghost_race_started', {
+        raceId,
+        puzzleSize: data.puzzleSize,
+        totalRounds: ghostSolves.length,
+        ghostUsername: ghostUser.username,
+        ghostMmr: ghostSession.mmrAtRecording || 1000,
+        isOldGhost,
+      });
+
+      // Start first round after a short delay
+      setTimeout(() => this.startGhostRaceRound(raceId), 2000);
+
+      console.log(`Ghost race ${raceId} started by ${socket.username} vs ${ghostUser.username}`);
+    } catch (error) {
+      console.error('Ghost race start error:', error);
+      socket.emit('error', { code: 'GHOST_ERROR', message: 'Failed to start ghost race' });
+    }
+  }
+
+  @SubscribeMessage('ghost_race_move')
+  async handleGhostRaceMove(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { seq: number; move: string; clientTs: number },
+  ) {
+    if (!socket.ghostRaceId || !socket.userId) return;
+
+    const race = this.activeGhostRaces.get(socket.ghostRaceId);
+    if (!race) return;
+
+    const isRotation = this.ROTATION_MOVES.includes(data.move);
+
+    // Check if this is the first non-rotation move
+    if (!isRotation && !race.solveStartedAt) {
+      race.solveStartedAt = Date.now();
+      // Set 10-minute timeout
+      const raceId = socket.ghostRaceId;
+      race.solveTimeout = setTimeout(
+        () => this.handleGhostRaceSolveTimeout(raceId),
+        this.SOLVE_TIMEOUT_MS,
+      );
+    }
+  }
+
+  @SubscribeMessage('ghost_race_complete')
+  async handleGhostRaceComplete(@ConnectedSocket() socket: AuthenticatedSocket) {
+    if (!socket.ghostRaceId || !socket.userId || !this.soloService) return;
+
+    const race = this.activeGhostRaces.get(socket.ghostRaceId);
+    if (!race) return;
+
+    // Clear solve timeout
+    if (race.solveTimeout) {
+      clearTimeout(race.solveTimeout);
+      race.solveTimeout = undefined;
+    }
+
+    // Calculate user's time
+    const userTime = race.solveStartedAt ? Date.now() - race.solveStartedAt : null;
+    race.userTimes.push(userTime);
+
+    const ghostTime = race.ghostTimes[race.currentRound - 1];
+    const userWonRound = userTime !== null && (ghostTime === null || userTime < ghostTime);
+
+    socket.emit('ghost_race_solve_result', {
+      round: race.currentRound,
+      userTime,
+      ghostTime,
+      userWonRound,
+      completedRounds: race.currentRound,
+      totalRounds: race.totalRounds,
+    });
+
+    if (race.currentRound >= race.totalRounds) {
+      await this.finishGhostRace(socket.ghostRaceId);
+    } else {
+      // Start next round after delay
+      const raceId = socket.ghostRaceId;
+      setTimeout(() => this.startGhostRaceRound(raceId), 3000);
+    }
+  }
+
+  @SubscribeMessage('ghost_race_abandon')
+  async handleGhostRaceAbandon(@ConnectedSocket() socket: AuthenticatedSocket) {
+    if (!socket.ghostRaceId) return;
+
+    const race = this.activeGhostRaces.get(socket.ghostRaceId);
+    if (race) {
+      if (race.inspectionTimer) clearTimeout(race.inspectionTimer);
+      if (race.solveTimeout) clearTimeout(race.solveTimeout);
+    }
+
+    this.activeGhostRaces.delete(socket.ghostRaceId);
+    socket.ghostRaceId = undefined;
+
+    socket.emit('ghost_race_abandoned', {});
+  }
+
+  private async startGhostRaceRound(raceId: string) {
+    const race = this.activeGhostRaces.get(raceId);
+    if (!race || !this.soloService) return;
+
+    race.currentRound += 1;
+    race.solveStartedAt = undefined;
+
+    // Clear any existing timeout
+    if (race.solveTimeout) {
+      clearTimeout(race.solveTimeout);
+      race.solveTimeout = undefined;
+    }
+
+    const ghostSolve = race.ghostSolves[race.currentRound - 1];
+    if (!ghostSolve) return;
+
+    const inspectionStartsAt = Date.now() + 500;
+
+    // Find the socket for this race
+    const socket = this.findSocketByGhostRace(raceId);
+    if (!socket) return;
+
+    socket.emit('ghost_race_round_start', {
+      round: race.currentRound,
+      totalRounds: race.totalRounds,
+      scramble: ghostSolve.scramble,
+      inspectionStartsAt,
+      ghostMoves: ghostSolve.moves, // Send ghost moves for replay
+      ghostTime: ghostSolve.timeMs,
+      ghostInspectionStartAt: ghostSolve.inspectionStartAt, // Original inspection start for timing
+    });
+
+    // Set inspection end timer
+    race.inspectionTimer = setTimeout(
+      () => this.handleGhostRaceInspectionEnd(raceId),
+      INSPECTION_DURATION_MS + 500,
+    );
+  }
+
+  private handleGhostRaceInspectionEnd(raceId: string) {
+    const race = this.activeGhostRaces.get(raceId);
+    if (!race) return;
+
+    const socket = this.findSocketByGhostRace(raceId);
+    if (!socket) return;
+
+    socket.emit('ghost_race_inspection_end', { solveStartsAt: Date.now() });
+  }
+
+  private async handleGhostRaceSolveTimeout(raceId: string) {
+    const race = this.activeGhostRaces.get(raceId);
+    if (!race || !this.soloService) return;
+
+    race.solveTimeout = undefined;
+    race.userTimes.push(null); // DNF
+
+    const ghostTime = race.ghostTimes[race.currentRound - 1];
+
+    const socket = this.findSocketByGhostRace(raceId);
+    if (!socket) return;
+
+    socket.emit('ghost_race_dnf', { reason: 'timeout' });
+    socket.emit('ghost_race_solve_result', {
+      round: race.currentRound,
+      userTime: null,
+      ghostTime,
+      userWonRound: false,
+      completedRounds: race.currentRound,
+      totalRounds: race.totalRounds,
+    });
+
+    if (race.currentRound >= race.totalRounds) {
+      await this.finishGhostRace(raceId);
+    } else {
+      setTimeout(() => this.startGhostRaceRound(raceId), 3000);
+    }
+  }
+
+  private async finishGhostRace(raceId: string) {
+    const race = this.activeGhostRaces.get(raceId);
+    if (!race || !this.soloService) return;
+
+    // Clear timers
+    if (race.inspectionTimer) clearTimeout(race.inspectionTimer);
+    if (race.solveTimeout) clearTimeout(race.solveTimeout);
+
+    const result = await this.soloService.calculateGhostRaceResult(
+      race.oderId,
+      race.puzzleSize,
+      race.userTimes,
+      race.ghostTimes,
+      race.ghostMmrAtRecording,
+      race.ghostUserId,
+      race.isOldGhost,
+    );
+
+    const socket = this.findSocketByGhostRace(raceId);
+    if (socket) {
+      socket.emit('ghost_race_end', {
+        userWins: result.userWins,
+        ghostWins: result.ghostWins,
+        userWon: result.userWon,
+        mmrDelta: result.mmrDelta,
+        newMmr: result.newMmr,
+        newLeague: result.newLeague,
+        ghostUsername: race.ghostUsername,
+        isOldGhost: race.isOldGhost,
+      });
+      (socket as AuthenticatedSocket).ghostRaceId = undefined;
+    }
+
+    this.activeGhostRaces.delete(raceId);
+  }
+
+  private findSocketByGhostRace(raceId: string): Socket | undefined {
+    if (!this.server) return undefined;
+
+    const socketsMap = this.server.sockets as unknown as Map<string, Socket>;
+    for (const [, socket] of socketsMap) {
+      if ((socket as AuthenticatedSocket).ghostRaceId === raceId) {
+        return socket;
+      }
+    }
+    return undefined;
+  }
+
+  // ==========================================================================
+  // PVP MATCH METHODS
+  // ==========================================================================
 
   private async createMatch(player1: QueueEntry, player2: QueueEntry, puzzleSize: PuzzleSize) {
     // Create match in database
@@ -458,6 +1189,18 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     matchState.currentRound += 1;
     matchState.player1Ready = false;
     matchState.player2Ready = false;
+    // Reset solve start times for the new round
+    matchState.player1SolveStartedAt = undefined;
+    matchState.player2SolveStartedAt = undefined;
+    // Clear any existing solve timeouts
+    if (matchState.player1SolveTimeout) {
+      clearTimeout(matchState.player1SolveTimeout);
+      matchState.player1SolveTimeout = undefined;
+    }
+    if (matchState.player2SolveTimeout) {
+      clearTimeout(matchState.player2SolveTimeout);
+      matchState.player2SolveTimeout = undefined;
+    }
 
     // Create solve record with scramble
     const solve = await this.matchesService.startRound(matchId, matchState.currentRound);
@@ -567,12 +1310,21 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const matchState = this.activeMatches.get(matchId);
     if (!matchState) return;
 
-    // Clear any pending abandon timeouts
+    // Clear all pending timeouts
     if (matchState.player1AbandonTimeout) {
       clearTimeout(matchState.player1AbandonTimeout);
     }
     if (matchState.player2AbandonTimeout) {
       clearTimeout(matchState.player2AbandonTimeout);
+    }
+    if (matchState.player1SolveTimeout) {
+      clearTimeout(matchState.player1SolveTimeout);
+    }
+    if (matchState.player2SolveTimeout) {
+      clearTimeout(matchState.player2SolveTimeout);
+    }
+    if (matchState.inspectionTimer) {
+      clearTimeout(matchState.inspectionTimer);
     }
 
     const result = await this.matchesService.completeMatch(matchId);
@@ -606,6 +1358,141 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       if (p2) p2.matchId = undefined;
       this.activeMatches.delete(matchId);
     }, 10000);
+  }
+
+  /**
+   * Handle solve timeout (10 minutes) - mark the solve as DNF
+   */
+  private async handleSolveTimeout(matchId: string, userId: string) {
+    const matchState = this.activeMatches.get(matchId);
+    if (!matchState) return;
+
+    console.log(`Solve timeout for user ${userId} in match ${matchId}`);
+
+    const isPlayer1 = userId === matchState.player1Id;
+
+    // Clear the timeout reference
+    if (isPlayer1) {
+      matchState.player1SolveTimeout = undefined;
+    } else {
+      matchState.player2SolveTimeout = undefined;
+    }
+
+    // Record DNF for this player
+    const result = await this.matchesService.recordDNF(
+      matchId,
+      matchState.currentRound,
+      userId,
+    );
+
+    if (!result) return;
+
+    // Notify both players of the DNF
+    const p1Socket = this.findSocketByUserId(matchState.player1Id);
+    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+
+    const dnfPlayer = isPlayer1 ? 'p1' : 'p2';
+    p1Socket?.emit('player_dnf', {
+      player: dnfPlayer === 'p1' ? 'you' : 'opponent',
+      reason: 'timeout',
+    });
+    p2Socket?.emit('player_dnf', {
+      player: dnfPlayer === 'p2' ? 'you' : 'opponent',
+      reason: 'timeout',
+    });
+
+    // Check if round is complete
+    if (result.roundComplete) {
+      await this.handleRoundComplete(matchId, matchState, result);
+    }
+  }
+
+  /**
+   * Handle match forfeit (disconnect or abandon)
+   */
+  private async handleForfeit(matchId: string, forfeitingUserId: string) {
+    const matchState = this.activeMatches.get(matchId);
+    if (!matchState) return;
+
+    console.log(`Match ${matchId} forfeited by user ${forfeitingUserId}`);
+
+    // Clear all timers
+    if (matchState.inspectionTimer) {
+      clearTimeout(matchState.inspectionTimer);
+    }
+    if (matchState.player1SolveTimeout) {
+      clearTimeout(matchState.player1SolveTimeout);
+    }
+    if (matchState.player2SolveTimeout) {
+      clearTimeout(matchState.player2SolveTimeout);
+    }
+    if (matchState.player1AbandonTimeout) {
+      clearTimeout(matchState.player1AbandonTimeout);
+    }
+    if (matchState.player2AbandonTimeout) {
+      clearTimeout(matchState.player2AbandonTimeout);
+    }
+
+    // Forfeit the match
+    const result = await this.matchesService.forfeitMatch(matchId, forfeitingUserId);
+
+    if (!result) {
+      // Match was already completed or doesn't exist
+      this.activeMatches.delete(matchId);
+      return;
+    }
+
+    // Notify both players
+    const p1Socket = this.findSocketByUserId(matchState.player1Id);
+    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+
+    const isPlayer1Forfeiting = forfeitingUserId === matchState.player1Id;
+
+    // Send forfeit notification to winner (the one who didn't forfeit)
+    if (isPlayer1Forfeiting) {
+      p2Socket?.emit('opponent_forfeit', {});
+      p2Socket?.emit('match_end', {
+        winner: 'you',
+        finalScores: { you: result.p2Score, opponent: result.p1Score },
+        mmrDelta: result.p2MmrDelta,
+        newMmr: result.p2NewMmr,
+        newLeague: result.p2NewLeague,
+        forfeit: true,
+      });
+      p1Socket?.emit('match_end', {
+        winner: 'opponent',
+        finalScores: { you: result.p1Score, opponent: result.p2Score },
+        mmrDelta: result.p1MmrDelta,
+        newMmr: result.p1NewMmr,
+        newLeague: result.p1NewLeague,
+        forfeit: true,
+      });
+    } else {
+      p1Socket?.emit('opponent_forfeit', {});
+      p1Socket?.emit('match_end', {
+        winner: 'you',
+        finalScores: { you: result.p1Score, opponent: result.p2Score },
+        mmrDelta: result.p1MmrDelta,
+        newMmr: result.p1NewMmr,
+        newLeague: result.p1NewLeague,
+        forfeit: true,
+      });
+      p2Socket?.emit('match_end', {
+        winner: 'opponent',
+        finalScores: { you: result.p2Score, opponent: result.p1Score },
+        mmrDelta: result.p2MmrDelta,
+        newMmr: result.p2NewMmr,
+        newLeague: result.p2NewLeague,
+        forfeit: true,
+      });
+    }
+
+    // Clean up match state
+    const p1 = p1Socket as AuthenticatedSocket;
+    const p2 = p2Socket as AuthenticatedSocket;
+    if (p1) p1.matchId = undefined;
+    if (p2) p2.matchId = undefined;
+    this.activeMatches.delete(matchId);
   }
 
   private findSocketByUserId(userId: string): Socket | undefined {

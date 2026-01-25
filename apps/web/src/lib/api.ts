@@ -80,35 +80,49 @@ export interface UserPreferences {
   cubeColors?: Record<string, string>;
 }
 
+// User profile type
+export interface UserProfile {
+  id: string;
+  username: string;
+  mmr: number;
+  league: string;
+  country?: string;
+  createdAt: string;
+  stats: Array<{
+    id: string;
+    puzzleSize: string;
+    mmr: number;
+    league: string;
+    gamesPlayed: number;
+    gamesWon: number;
+    solvesCompleted: number;
+    solvesWon: number;
+    bestTimeMs: number | null;
+    avgTimeMs: number | null;
+    isProvisional: boolean;
+  }>;
+}
+
 // Users API
 export const usersApi = {
   getMe: (token: string) =>
-    request<{
-      id: string;
-      username: string;
-      mmr: number;
-      league: string;
-      createdAt: string;
-      stats: Array<{
-        id: string;
-        puzzleSize: string;
-        mmr: number;
-        league: string;
-        gamesPlayed: number;
-        gamesWon: number;
-        solvesCompleted: number;
-        solvesWon: number;
-        bestTimeMs: number | null;
-        avgTimeMs: number | null;
-        isProvisional: boolean;
-      }>;
-    }>('/users/me', { token }),
+    request<UserProfile>('/users/me', { token }),
+
+  getProfileByUsername: (username: string) =>
+    request<UserProfile>(`/users/profile/${username}`),
 
   updateUsername: (token: string, username: string) =>
     request('/users/me', {
       method: 'PATCH',
       token,
       body: { username },
+    }),
+
+  updateCountry: (token: string, country: string) =>
+    request<{ country: string }>('/users/me/country', {
+      method: 'PUT',
+      token,
+      body: { country },
     }),
 
   getPreferences: (token: string) =>
@@ -120,6 +134,30 @@ export const usersApi = {
       token,
       body: preferences,
     }),
+
+  getMmrHistory: (userId: string) =>
+    request<Array<{ date: string; mmr: number; matchId: string }>>(`/users/${userId}/mmr-history`),
+
+  getUserMatches: (userId: string, page = 1) =>
+    request<{
+      matches: Array<{
+        id: string;
+        puzzleSize: string;
+        player1: { id: string; username: string };
+        player2: { id: string; username: string };
+        player1Score: number;
+        player2Score: number;
+        player1MmrBefore: number;
+        player1MmrAfter: number;
+        player2MmrBefore: number;
+        player2MmrAfter: number;
+        winnerId: string;
+        status: string;
+        createdAt: string;
+        endedAt: string;
+      }>;
+      total: number;
+    }>(`/users/${userId}/matches?page=${page}`),
 };
 
 // Keybindings API
@@ -202,6 +240,43 @@ export const leaderboardApi = {
     }>(`/leaderboard/${puzzle}?page=${page}&limit=${limit}`),
 };
 
+// Match solve with moves
+export interface MatchSolve {
+  id: string;
+  roundNumber: number;
+  scramble: string;
+  p1TimeMs: number | null;
+  p1MoveCount: number;
+  p1Moves: Array<{ seq: number; move: string; clientTs: number; serverTs: number }>;
+  p1IsWinner: boolean;
+  p1Status: string;
+  p2TimeMs: number | null;
+  p2MoveCount: number;
+  p2Moves: Array<{ seq: number; move: string; clientTs: number; serverTs: number }>;
+  p2IsWinner: boolean;
+  p2Status: string;
+}
+
+// Match detail with solves
+export interface MatchDetail {
+  id: string;
+  puzzleSize: string;
+  player1: { id: string; username: string; mmr: number; league: string };
+  player2: { id: string; username: string; mmr: number; league: string };
+  player1Score: number;
+  player2Score: number;
+  player1MmrBefore: number;
+  player1MmrAfter: number;
+  player2MmrBefore: number;
+  player2MmrAfter: number;
+  winnerId: string;
+  status: string;
+  createdAt: string;
+  startedAt: string;
+  endedAt: string;
+  solves: MatchSolve[];
+}
+
 // Matches API
 export const matchesApi = {
   getHistory: (token: string, page = 1) =>
@@ -223,6 +298,6 @@ export const matchesApi = {
       pageSize: number;
     }>(`/matches?page=${page}`, { token }),
 
-  getMatch: (token: string, id: string) =>
-    request(`/matches/${id}`, { token }),
+  getMatch: (id: string) =>
+    request<MatchDetail>(`/matches/${id}`),
 };

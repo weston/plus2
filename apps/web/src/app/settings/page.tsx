@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
 import { keybindingsApi, usersApi } from '@/lib/api';
 import { ALL_MOVES, DEFAULT_KEYBINDINGS } from '@plus2/shared';
+import { CountryFlag, COUNTRIES } from '@/components/CountryFlag';
 
 type SettingsTab = 'controls' | 'appearance' | 'account';
 
@@ -45,6 +46,9 @@ export default function SettingsPage() {
   const [animationSpeed, setAnimationSpeed] = useState(DEFAULT_ANIMATION_SPEED);
   const [isSavingPrefs, setIsSavingPrefs] = useState(false);
 
+  // Account state
+  const [country, setCountry] = useState<string>('');
+
   // Redirect if not logged in (wait for hydration first)
   useEffect(() => {
     if (_hasHydrated && (!user || !accessToken)) {
@@ -77,6 +81,13 @@ export default function SettingsPage() {
     }).catch(() => {
       // Failed to load preferences, use defaults
     });
+
+    // Load user profile for country
+    usersApi.getMe(accessToken).then((profile) => {
+      if (profile.country) {
+        setCountry(profile.country);
+      }
+    }).catch(() => {});
   }, [accessToken]);
 
   const handleKeyCapture = (e: KeyboardEvent) => {
@@ -174,6 +185,18 @@ export default function SettingsPage() {
     savePreferences({ cubeColors: DEFAULT_CUBE_COLORS });
     setMessage('Colors reset to defaults');
     setTimeout(() => setMessage(''), 3000);
+  };
+
+  const handleCountryChange = async (newCountry: string) => {
+    if (!accessToken) return;
+    setCountry(newCountry);
+    try {
+      await usersApi.updateCountry(accessToken, newCountry);
+      setMessage('Country updated!');
+      setTimeout(() => setMessage(''), 3000);
+    } catch {
+      setMessage('Failed to update country');
+    }
   };
 
   const handleLogout = () => {
@@ -410,6 +433,28 @@ export default function SettingsPage() {
                   <span className="text-gray-400">MMR</span>
                   <span className="font-semibold">{user.mmr}</span>
                 </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <h2 className="text-xl font-semibold mb-6">Country</h2>
+              <p className="text-gray-400 mb-4">
+                Select your country to display a flag on your profile and in matches.
+              </p>
+              <div className="flex items-center gap-4">
+                <CountryFlag country={country} size="lg" />
+                <select
+                  value={country}
+                  onChange={(e) => handleCountryChange(e.target.value)}
+                  className="flex-1 px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Select a country</option>
+                  {COUNTRIES.map((c) => (
+                    <option key={c.code} value={c.code}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 

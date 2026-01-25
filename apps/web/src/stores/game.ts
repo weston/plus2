@@ -42,6 +42,7 @@ interface GameState {
   opponentMoves: string[];
   myTime: number | null;
   opponentTime: number | null;
+  opponentSolveStartedAt: number | null; // Server timestamp when opponent started solving
 
   // Results
   matchWinner: 'you' | 'opponent' | null;
@@ -60,8 +61,9 @@ interface GameState {
   startSolve: (solveStartsAt: number) => void;
   addMyMove: (move: string) => void;
   addOpponentMove: (move: string) => void;
-  setSolveComplete: (myTime: number) => void;
+  setSolveComplete: (myTime: number | null) => void;
   setOpponentDone: (opponentTime: number) => void;
+  setOpponentStarted: (serverTimestamp: number) => void;
   setRoundResult: (winner: 'you' | 'opponent' | 'draw', scores: { you: number; opponent: number }) => void;
   setMatchComplete: (winner: 'you' | 'opponent', mmrDelta: number, newMmr: number, newLeague: LeagueTier) => void;
   reset: () => void;
@@ -84,6 +86,7 @@ const initialState = {
   opponentMoves: [],
   myTime: null,
   opponentTime: null,
+  opponentSolveStartedAt: null,
   matchWinner: null,
   mmrDelta: 0,
   newMmr: 0,
@@ -125,6 +128,7 @@ export const useGameStore = create<GameState>((set) => ({
       opponentMoves: [],
       myTime: null,
       opponentTime: null,
+      opponentSolveStartedAt: null,
     }),
 
   startSolve: (solveStartsAt) =>
@@ -141,6 +145,9 @@ export const useGameStore = create<GameState>((set) => ({
 
   setOpponentDone: (opponentTime) =>
     set({ opponentTime }),
+
+  setOpponentStarted: (serverTimestamp) =>
+    set({ opponentSolveStartedAt: serverTimestamp }),
 
   setRoundResult: (winner, scores) =>
     set({

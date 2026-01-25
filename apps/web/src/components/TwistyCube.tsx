@@ -1,7 +1,11 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import type { PuzzleSize } from '@plus2/shared';
+
+export interface TwistyCubeHandle {
+  checkSolved: () => Promise<boolean>;
+}
 
 interface TwistyCubeProps {
   puzzleSize: PuzzleSize;
@@ -9,7 +13,6 @@ interface TwistyCubeProps {
   moves?: string[];
   isInteractive?: boolean;
   onMove?: (move: string) => void;
-  onSolved?: () => void;
   animationSpeed?: number; // 1 = normal, higher = faster, 0 = instant
   className?: string;
 }
@@ -23,26 +26,19 @@ const puzzleMap: Record<PuzzleSize, CubingPuzzle> = {
   '5x5': '5x5x5',
 };
 
-export function TwistyCube({
+export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function TwistyCube({
   puzzleSize,
   scramble = '',
   moves = [],
   isInteractive = false,
   onMove,
-  onSolved,
   animationSpeed = 3,
   className = '',
-}: TwistyCubeProps) {
+}, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
   const lastMoveCount = useRef(0);
-  const onSolvedRef = useRef(onSolved);
   const animationSpeedRef = useRef(animationSpeed);
-
-  // Keep refs up to date
-  useEffect(() => {
-    onSolvedRef.current = onSolved;
-  }, [onSolved]);
 
   useEffect(() => {
     animationSpeedRef.current = animationSpeed;
@@ -51,6 +47,51 @@ export function TwistyCube({
       playerRef.current.tempoScale = animationSpeed;
     }
   }, [animationSpeed]);
+
+  // Expose checkSolved method to parent components
+  useImperativeHandle(ref, () => ({
+    checkSolved: async () => {
+      try {
+        const player = playerRef.current;
+        if (!player) return false;
+
+        const { Alg } = await import('cubing/alg');
+
+        // Get current state from the player
+        const currentPattern = await player.experimentalModel.currentPattern.get();
+
+        // Get the puzzle and its solved state
+        const { puzzles } = await import('cubing/puzzles');
+        const kpuzzle = await puzzles[puzzleMap[puzzleSize]].kpuzzle();
+        const solvedState = kpuzzle.defaultPattern();
+
+        // All 24 possible cube orientations
+        const orientations = [
+          '', 'x', 'x2', "x'",
+          'y', 'y x', 'y x2', "y x'",
+          'y2', 'y2 x', 'y2 x2', "y2 x'",
+          "y'", "y' x", "y' x2", "y' x'",
+          'z', 'z x', 'z x2', "z x'",
+          "z'", "z' x", "z' x2", "z' x'"
+        ];
+
+        // Check if current pattern matches solved state in any orientation
+        for (const orient of orientations) {
+          const rotatedSolved = orient
+            ? solvedState.applyAlg(new Alg(orient))
+            : solvedState;
+
+          if (currentPattern.isIdentical(rotatedSolved)) {
+            return true;
+          }
+        }
+        return false;
+      } catch (e) {
+        console.error('Solve check error:', e);
+        return false;
+      }
+    }
+  }), [puzzleSize]);
 
   // Initialize cube
   useEffect(() => {
@@ -99,8 +140,8 @@ export function TwistyCube({
             distance: 6,
           });
 
-          // Enable drag input to rotate the cube view
-          player.experimentalModel.twistySceneModel.dragInput.set('auto');
+          // Disable drag input - cube orientation must be fixed
+          player.experimentalModel.twistySceneModel.dragInput.set('none');
         } catch (e) {
           // Camera setup failed, use defaults
         }
@@ -115,7 +156,7 @@ export function TwistyCube({
     };
   }, [puzzleSize, scramble]);
 
-  // Apply new moves and check for solved state
+  // Apply new moves (solve checking is done on demand via ref)
   useEffect(() => {
     if (!playerRef.current || moves.length === 0) return;
 
@@ -123,11 +164,10 @@ export function TwistyCube({
     const newMoves = moves.slice(lastMoveCount.current);
     if (newMoves.length === 0) return;
 
-    const applyMovesAndCheckSolved = async () => {
+    const applyMoves = async () => {
       try {
         const { Alg } = await import('cubing/alg');
         const player = playerRef.current;
-        const model = player.experimentalModel;
 
         // Add each move with animation
         for (const moveStr of newMoves) {
@@ -139,29 +179,12 @@ export function TwistyCube({
           }
         }
         lastMoveCount.current = moves.length;
-
-        // Wait a bit for animation, then check if solved
-        setTimeout(async () => {
-          if (model && onSolvedRef.current) {
-            try {
-              const state = await model.currentPattern.get();
-              const puzzle = await model.puzzle.get();
-              const solvedState = puzzle.defaultPattern();
-
-              if (state.isIdentical(solvedState)) {
-                onSolvedRef.current();
-              }
-            } catch (e) {
-              // Ignore errors during solve check
-            }
-          }
-        }, 100);
       } catch (e) {
         console.error('Failed to apply moves:', e);
       }
     };
 
-    applyMovesAndCheckSolved();
+    applyMoves();
   }, [moves]);
 
   return (
@@ -171,4 +194,4 @@ export function TwistyCube({
       style={{ minHeight: '400px' }}
     />
   );
-}
+});

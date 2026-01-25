@@ -122,7 +122,7 @@ export default function LeaderboardPage() {
                     </td>
                     <td className="p-4">
                       <Link
-                        href={`/profile/${entry.userId}`}
+                        href={`/profile/${entry.username}`}
                         className="hover:text-blue-500"
                       >
                         {entry.username}

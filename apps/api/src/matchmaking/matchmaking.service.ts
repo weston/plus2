@@ -22,6 +22,17 @@ export interface QueueEntry {
   league: string;
 }
 
+export interface Challenge {
+  code: string;
+  creatorId: string;
+  creatorSocketId: string;
+  puzzleSize: PuzzleSize;
+  createdAt: number;
+  creatorUsername: string;
+  creatorMmr: number;
+  creatorLeague: string;
+}
+
 @Injectable()
 export class MatchmakingService {
   // In-memory queue (could be Redis for horizontal scaling)
@@ -31,6 +42,9 @@ export class MatchmakingService {
     ['4x4', new Map()],
     ['5x5', new Map()],
   ]);
+
+  // Challenge links - code -> Challenge
+  private challenges: Map<string, Challenge> = new Map();
 
   constructor(
     @InjectRepository(User)
@@ -152,5 +166,70 @@ export class MatchmakingService {
       }
     }
     return null;
+  }
+
+  // Challenge link methods
+  private generateChallengeCode(): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return code;
+  }
+
+  async createChallenge(
+    userId: string,
+    socketId: string,
+    puzzleSize: PuzzleSize,
+  ): Promise<Challenge> {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) throw new Error('User not found');
+
+    const stats = await this.statsRepository.findOne({
+      where: { userId, puzzleSize },
+    });
+
+    // Generate unique code
+    let code: string;
+    do {
+      code = this.generateChallengeCode();
+    } while (this.challenges.has(code));
+
+    const challenge: Challenge = {
+      code,
+      creatorId: userId,
+      creatorSocketId: socketId,
+      puzzleSize,
+      createdAt: Date.now(),
+      creatorUsername: user.username,
+      creatorMmr: stats?.mmr || 1000,
+      creatorLeague: user.league,
+    };
+
+    this.challenges.set(code, challenge);
+
+    // Auto-expire after 10 minutes
+    setTimeout(() => {
+      this.challenges.delete(code);
+    }, 10 * 60 * 1000);
+
+    return challenge;
+  }
+
+  getChallenge(code: string): Challenge | undefined {
+    return this.challenges.get(code.toUpperCase());
+  }
+
+  deleteChallenge(code: string): void {
+    this.challenges.delete(code.toUpperCase());
+  }
+
+  deleteChallengeByCreator(userId: string): void {
+    for (const [code, challenge] of this.challenges.entries()) {
+      if (challenge.creatorId === userId) {
+        this.challenges.delete(code);
+      }
+    }
   }
 }

@@ -318,6 +318,191 @@ export class MatchesService {
     });
   }
 
+  /**
+   * Forfeit a match - the forfeiting player loses, opponent wins by default.
+   * All incomplete solves are marked as DNF for the forfeiting player.
+   */
+  async forfeitMatch(
+    matchId: string,
+    forfeitingPlayerId: string,
+  ): Promise<{
+    winnerId: string;
+    p1Score: number;
+    p2Score: number;
+    p1MmrDelta: number;
+    p1NewMmr: number;
+    p1NewLeague: string;
+    p2MmrDelta: number;
+    p2NewMmr: number;
+    p2NewLeague: string;
+  } | null> {
+    const match = await this.matchRepository.findOne({
+      where: { id: matchId },
+      relations: ['solves'],
+    });
+
+    if (!match || match.status === 'completed' || match.status === 'forfeited') {
+      return null;
+    }
+
+    const isPlayer1Forfeiting = match.player1Id === forfeitingPlayerId;
+    const winnerId = isPlayer1Forfeiting ? match.player2Id : match.player1Id;
+
+    // Mark all incomplete solves as DNF for the forfeiting player
+    for (const solve of match.solves || []) {
+      if (isPlayer1Forfeiting) {
+        if (solve.p1Status !== 'completed') {
+          solve.p1Status = 'dnf';
+          solve.p1TimeMs = null;
+          solve.p1IsWinner = false;
+          solve.p2IsWinner = true;
+        }
+      } else {
+        if (solve.p2Status !== 'completed') {
+          solve.p2Status = 'dnf';
+          solve.p2TimeMs = null;
+          solve.p2IsWinner = false;
+          solve.p1IsWinner = true;
+        }
+      }
+      await this.solveRepository.save(solve);
+    }
+
+    // Set winner's score to wins needed
+    match.winnerId = winnerId;
+    match.status = 'forfeited';
+    match.endedAt = new Date();
+
+    if (isPlayer1Forfeiting) {
+      match.player2Score = WINS_NEEDED;
+    } else {
+      match.player1Score = WINS_NEEDED;
+    }
+
+    // Update ratings - forfeiting player gets a loss
+    const p1Won = !isPlayer1Forfeiting;
+
+    const [p1Result, p2Result] = await Promise.all([
+      this.usersService.updateRatingAfterMatch(
+        match.player1Id,
+        match.puzzleSize,
+        match.player2MmrBefore!,
+        p1Won,
+      ),
+      this.usersService.updateRatingAfterMatch(
+        match.player2Id,
+        match.puzzleSize,
+        match.player1MmrBefore!,
+        !p1Won,
+      ),
+    ]);
+
+    match.player1MmrAfter = p1Result.mmrAfter;
+    match.player2MmrAfter = p2Result.mmrAfter;
+
+    await this.matchRepository.save(match);
+
+    return {
+      winnerId,
+      p1Score: match.player1Score,
+      p2Score: match.player2Score,
+      p1MmrDelta: p1Result.mmrAfter - p1Result.mmrBefore,
+      p1NewMmr: p1Result.mmrAfter,
+      p1NewLeague: p1Result.league,
+      p2MmrDelta: p2Result.mmrAfter - p2Result.mmrBefore,
+      p2NewMmr: p2Result.mmrAfter,
+      p2NewLeague: p2Result.league,
+    };
+  }
+
+  /**
+   * Mark a player's solve as DNF (timeout or other reason)
+   */
+  async recordDNF(
+    matchId: string,
+    roundNumber: number,
+    userId: string,
+  ): Promise<{
+    roundComplete: boolean;
+    p1Time: number | null;
+    p2Time: number | null;
+    winner: 'p1' | 'p2' | 'draw' | null;
+    scores: { p1: number; p2: number };
+    matchComplete: boolean;
+  } | null> {
+    const match = await this.getMatch(matchId);
+    const solve = await this.solveRepository.findOne({
+      where: { matchId, roundNumber },
+    });
+
+    if (!solve) return null;
+
+    const isPlayer1 = match.player1Id === userId;
+
+    if (isPlayer1) {
+      solve.p1Status = 'dnf';
+      solve.p1TimeMs = null;
+    } else {
+      solve.p2Status = 'dnf';
+      solve.p2TimeMs = null;
+    }
+
+    // Check if round is complete
+    const roundComplete =
+      (solve.p1Status === 'completed' || solve.p1Status === 'dnf') &&
+      (solve.p2Status === 'completed' || solve.p2Status === 'dnf');
+
+    if (roundComplete) {
+      // Determine winner - DNF loses to any completed time
+      const p1Completed = solve.p1Status === 'completed';
+      const p2Completed = solve.p2Status === 'completed';
+
+      if (p1Completed && !p2Completed) {
+        solve.p1IsWinner = true;
+        solve.p2IsWinner = false;
+        match.player1Score += 1;
+      } else if (p2Completed && !p1Completed) {
+        solve.p1IsWinner = false;
+        solve.p2IsWinner = true;
+        match.player2Score += 1;
+      } else if (p1Completed && p2Completed) {
+        // Both completed - compare times
+        if (solve.p1TimeMs! < solve.p2TimeMs!) {
+          solve.p1IsWinner = true;
+          solve.p2IsWinner = false;
+          match.player1Score += 1;
+        } else if (solve.p2TimeMs! < solve.p1TimeMs!) {
+          solve.p1IsWinner = false;
+          solve.p2IsWinner = true;
+          match.player2Score += 1;
+        }
+      }
+      // If both DNF, no one wins the round
+
+      await this.matchRepository.save(match);
+    }
+
+    await this.solveRepository.save(solve);
+
+    const matchComplete =
+      match.player1Score >= WINS_NEEDED || match.player2Score >= WINS_NEEDED;
+
+    return {
+      roundComplete,
+      p1Time: solve.p1TimeMs,
+      p2Time: solve.p2TimeMs,
+      winner: roundComplete
+        ? solve.p1IsWinner
+          ? 'p1'
+          : solve.p2IsWinner
+            ? 'p2'
+            : 'draw'
+        : null,
+      scores: { p1: match.player1Score, p2: match.player2Score },
+      matchComplete,
+    };
+  }
+
   async getUserMatches(
     userId: string,
     page = 1,

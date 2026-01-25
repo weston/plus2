@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
-import { TwistyCube } from '@/components/TwistyCube';
+import { TwistyCube, TwistyCubeHandle } from '@/components/TwistyCube';
 import { Timer } from '@/components/Timer';
 import { useKeybindings } from '@/hooks/useKeybindings';
 import { useAuthStore } from '@/stores/auth';
@@ -101,7 +101,8 @@ export default function PracticePage() {
 
   const moveSeqRef = useRef(0);
   const inspectionTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const isSolvedRef = useRef(false); // Track if cube was solved during this attempt
+  const phaseRef = useRef<PracticePhase>('idle'); // Ref for current phase to avoid closure issues
+  const cubeRef = useRef<TwistyCubeHandle>(null);
 
   // Load animation speed from server preferences
   useEffect(() => {
@@ -115,6 +116,11 @@ export default function PracticePage() {
     });
   }, [accessToken]);
 
+  // Keep phaseRef in sync with phase state
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
+
   // Generate new scramble (but don't apply it to cube yet)
   const newScramble = useCallback(() => {
     setScramble(generateScramble(puzzleSize));
@@ -122,8 +128,8 @@ export default function PracticePage() {
     setMoves([]);
     setSolveTime(null);
     setPhase('idle');
+    phaseRef.current = 'idle';
     moveSeqRef.current = 0;
-    isSolvedRef.current = false;
   }, [puzzleSize]);
 
   // Initialize with a scramble
@@ -133,18 +139,19 @@ export default function PracticePage() {
 
   // Start inspection - scrambles the cube and shows it
   const startInspection = useCallback(() => {
-    if (phase !== 'idle') return;
+    if (phaseRef.current !== 'idle') return;
     setAppliedScramble(scramble); // Apply scramble to cube now
     setPhase('inspecting');
+    phaseRef.current = 'inspecting';
     setInspectionStart(Date.now());
-    isSolvedRef.current = false;
 
     // Auto-start solve after inspection ends
     inspectionTimerRef.current = setTimeout(() => {
       setPhase('solving');
+      phaseRef.current = 'solving';
       setSolveStart(Date.now());
     }, INSPECTION_DURATION_MS);
-  }, [phase, scramble]);
+  }, [scramble]);
 
   // Check if move is a rotation (doesn't start timer)
   const isRotation = (move: string) => {
@@ -154,8 +161,9 @@ export default function PracticePage() {
   // Handle move
   const handleMove = useCallback((move: string) => {
     const rotation = isRotation(move);
+    const currentPhase = phaseRef.current;
 
-    if (phase === 'inspecting') {
+    if (currentPhase === 'inspecting') {
       // Rotations during inspection don't start the solve
       if (rotation) {
         setMoves(prev => [...prev, move]);
@@ -166,47 +174,48 @@ export default function PracticePage() {
         clearTimeout(inspectionTimerRef.current);
       }
       setPhase('solving');
+      phaseRef.current = 'solving';
       setSolveStart(Date.now());
       setMoves(prev => [...prev, move]);
       moveSeqRef.current = 1;
       return;
     }
 
-    if (phase === 'solving') {
+    if (currentPhase === 'solving') {
       moveSeqRef.current += 1;
       setMoves(prev => [...prev, move]);
     }
-  }, [phase]);
+  }, []);
 
   // Count non-rotation moves
   const countNonRotationMoves = useCallback((moveList: string[]) => {
     return moveList.filter(m => !isRotation(m)).length;
   }, []);
 
-  // Stop timer (called when cube is solved or manually)
-  const stopTimer = useCallback((wasSolved: boolean = false) => {
-    if (phase !== 'solving' || !solveStart) return;
+  // Stop timer - checks if cube is solved and records the time
+  const stopTimer = useCallback(async () => {
+    // Use phaseRef to get CURRENT phase (not stale closure value)
+    if (phaseRef.current !== 'solving' || !solveStart) return;
 
     const time = Date.now() - solveStart;
+
+    // Check if cube is solved
+    const isSolved = await cubeRef.current?.checkSolved() ?? false;
+
     setSolveTime(time);
     setPhase('done');
+    phaseRef.current = 'done';
 
-    // Record the solve - DNF if stopped manually and not solved
+    // Record the solve - DNF if not solved
     const newTime: SolveTime = {
       time,
       scramble,
       moveCount: countNonRotationMoves(moves),
       timestamp: new Date(),
-      dnf: !wasSolved, // DNF if not solved
+      dnf: !isSolved,
     };
     setTimes(prev => [...prev, newTime]);
-  }, [phase, solveStart, scramble, moves, countNonRotationMoves]);
-
-  // Called when cube is solved (auto-detected)
-  const handleSolved = useCallback(() => {
-    isSolvedRef.current = true;
-    stopTimer(true); // Pass true to indicate it was solved
-  }, [stopTimer]);
+  }, [solveStart, scramble, moves, countNonRotationMoves]);
 
   // Mark last solve as DNF
   const markDNF = useCallback(() => {
@@ -237,26 +246,45 @@ export default function PracticePage() {
         return;
       }
 
+      const currentPhase = phaseRef.current;
+
       if (e.code === 'Space') {
         e.preventDefault();
 
-        if (phase === 'idle') {
+        if (currentPhase === 'idle') {
           startInspection();
-        } else if (phase === 'solving') {
-          stopTimer(isSolvedRef.current); // DNF if not solved
-        } else if (phase === 'done') {
-          newScramble();
+        } else if (currentPhase === 'solving') {
+          stopTimer(); // Will check if cube is solved
+        } else if (currentPhase === 'done') {
+          // Generate new scramble and immediately start inspection
+          const newScrambleStr = generateScramble(puzzleSize);
+          setScramble(newScrambleStr);
+          setAppliedScramble(newScrambleStr);
+          setMoves([]);
+          setSolveTime(null);
+          moveSeqRef.current = 0;
+          setPhase('inspecting');
+          phaseRef.current = 'inspecting';
+          setInspectionStart(Date.now());
+
+          // Auto-start solve after inspection ends
+          inspectionTimerRef.current = setTimeout(() => {
+            setPhase('solving');
+            phaseRef.current = 'solving';
+            setSolveStart(Date.now());
+          }, INSPECTION_DURATION_MS);
         }
       }
 
       if (e.code === 'Escape') {
         e.preventDefault();
-        if (phase === 'inspecting' || phase === 'solving') {
+        if (currentPhase === 'inspecting' || currentPhase === 'solving') {
           // Cancel current solve
           if (inspectionTimerRef.current) {
             clearTimeout(inspectionTimerRef.current);
           }
           setPhase('idle');
+          phaseRef.current = 'idle';
           setInspectionStart(null);
           setSolveStart(null);
         }
@@ -265,7 +293,7 @@ export default function PracticePage() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [phase, startInspection, stopTimer, newScramble]);
+  }, [startInspection, stopTimer, newScramble]);
 
   // Use keybindings for cube moves (not during idle since cube is hidden)
   useKeybindings({
@@ -355,19 +383,17 @@ export default function PracticePage() {
                   </p>
                 </div>
 
-                {/* Cube visualization - hidden during idle */}
-                {phase !== 'idle' && (
-                  <div className="w-full max-w-2xl mx-auto">
-                    <TwistyCube
-                      puzzleSize={puzzleSize}
-                      scramble={appliedScramble}
-                      moves={moves}
-                      onSolved={handleSolved}
-                      animationSpeed={animationSpeed}
-                      className="h-80 md:h-[500px]"
-                    />
-                  </div>
-                )}
+                {/* Cube visualization - always visible */}
+                <div className="w-full max-w-2xl mx-auto">
+                  <TwistyCube
+                    ref={cubeRef}
+                    puzzleSize={puzzleSize}
+                    scramble={appliedScramble}
+                    moves={moves}
+                    animationSpeed={animationSpeed}
+                    className="h-80 md:h-[500px]"
+                  />
+                </div>
 
                 {/* Move count - excludes rotations */}
                 {countNonRotationMoves(moves) > 0 && (

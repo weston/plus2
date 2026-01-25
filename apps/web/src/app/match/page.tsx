@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useGameStore } from '@/stores/game';
 import { useSocket } from '@/hooks/useSocket';
 import { useKeybindings } from '@/hooks/useKeybindings';
-import { TwistyCube } from '@/components/TwistyCube';
+import { TwistyCube, TwistyCubeHandle } from '@/components/TwistyCube';
 import { Timer } from '@/components/Timer';
 import { LeagueBadge } from '@/components/LeagueBadge';
 import { INSPECTION_DURATION_MS } from '@plus2/shared';
@@ -37,6 +37,7 @@ export default function MatchPage() {
     opponentMoves,
     myTime,
     opponentTime,
+    opponentSolveStartedAt,
     matchWinner,
     mmrDelta,
     newMmr,
@@ -47,10 +48,10 @@ export default function MatchPage() {
 
   const { sendMove, sendSolveComplete, sendRematch, sendRequeue } = useSocket();
   const moveSeqRef = useRef(0);
+  const cubeRef = useRef<TwistyCubeHandle>(null);
 
-  // Separate timer states for each player
+  // Timer state for my cube (opponent uses server timestamp from store)
   const [myTimerStart, setMyTimerStart] = useState<number | null>(null);
-  const [opponentTimerStart, setOpponentTimerStart] = useState<number | null>(null);
   const [myTimerRunning, setMyTimerRunning] = useState(false);
   const [isSolved, setIsSolved] = useState(false);
   const [inspectionTimeLeft, setInspectionTimeLeft] = useState(15);
@@ -66,7 +67,6 @@ export default function MatchPage() {
   useEffect(() => {
     if (phase === 'inspecting') {
       setMyTimerStart(null);
-      setOpponentTimerStart(null);
       setMyTimerRunning(false);
       setIsSolved(false);
       moveSeqRef.current = 0;
@@ -81,28 +81,20 @@ export default function MatchPage() {
       const elapsed = Date.now() - inspectionStartsAt;
       const remaining = Math.max(0, Math.ceil((INSPECTION_DURATION_MS - elapsed) / 1000));
       setInspectionTimeLeft(remaining);
-
-      // Auto-start solve when inspection ends
-      if (remaining === 0 && !myTimerStart) {
-        setMyTimerStart(Date.now());
-        setMyTimerRunning(true);
-        setPhase('solving');
-      }
     }, 100);
 
     return () => clearInterval(interval);
-  }, [phase, inspectionStartsAt, myTimerStart, setPhase]);
+  }, [phase, inspectionStartsAt]);
 
-  // Start opponent timer when they make their first non-rotation move
+  // Auto-start timer when inspection ends (phase changes to 'solving')
   useEffect(() => {
-    if (opponentMoves.length > 0 && !opponentTimerStart) {
-      // Check if any move is a non-rotation move
-      const hasNonRotation = opponentMoves.some(m => !isRotationMove(m));
-      if (hasNonRotation) {
-        setOpponentTimerStart(Date.now());
-      }
+    if (phase === 'solving' && !myTimerStart && !isSolved) {
+      // Use solveStartsAt from server if available, otherwise use current time
+      const startTime = solveStartsAt || Date.now();
+      setMyTimerStart(startTime);
+      setMyTimerRunning(true);
     }
-  }, [opponentMoves, opponentTimerStart]);
+  }, [phase, myTimerStart, isSolved, solveStartsAt]);
 
   // Handle move from keyboard
   const handleMove = useCallback(
@@ -127,13 +119,17 @@ export default function MatchPage() {
 
   // Handle spacebar for solve completion
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
       if (e.code === 'Space' && phase === 'solving' && myTimerRunning && !isSolved) {
         e.preventDefault();
         const solveTime = myTimerStart ? Date.now() - myTimerStart : 0;
-        setIsSolved(true);
+
+        // Check if cube is actually solved
+        const cubeSolved = await cubeRef.current?.checkSolved() ?? false;
+
+        setIsSolved(cubeSolved);
         setMyTimerRunning(false);
-        setSolveComplete(solveTime);
+        setSolveComplete(cubeSolved ? solveTime : null); // null time = DNF
         sendSolveComplete();
       }
     };
@@ -199,6 +195,7 @@ export default function MatchPage() {
             </div>
 
             <TwistyCube
+              ref={cubeRef}
               puzzleSize={puzzleSize}
               scramble={scramble}
               moves={myMoves}
@@ -241,14 +238,14 @@ export default function MatchPage() {
 
             <div className="text-center">
               <Timer
-                startTime={opponentTimerStart}
-                isRunning={opponentTimerStart !== null && !opponentTime}
+                startTime={opponentSolveStartedAt}
+                isRunning={opponentSolveStartedAt !== null && !opponentTime}
                 finalTime={opponentTime}
               />
               <p className="text-gray-400 mt-2">
-                {!opponentTimerStart && phase === 'inspecting' && 'Inspecting...'}
-                {!opponentTimerStart && phase === 'solving' && 'Inspecting...'}
-                {opponentTimerStart && !opponentTime && 'Solving...'}
+                {!opponentSolveStartedAt && phase === 'inspecting' && 'Inspecting...'}
+                {!opponentSolveStartedAt && phase === 'solving' && 'Inspecting...'}
+                {opponentSolveStartedAt && !opponentTime && 'Solving...'}
                 {opponentTime && 'Done!'}
               </p>
             </div>

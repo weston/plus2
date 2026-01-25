@@ -1,12 +1,17 @@
 'use client';
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useAuthStore } from '@/stores/auth';
 import { useGameStore } from '@/stores/game';
 import type { PuzzleSize, ServerEvents } from '@plus2/shared';
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001';
+
+export interface ChallengeInfo {
+  code: string;
+  puzzleSize: PuzzleSize;
+}
 
 export function useSocket() {
   const socketRef = useRef<Socket | null>(null);
@@ -20,10 +25,14 @@ export function useSocket() {
     startSolve,
     addOpponentMove,
     setOpponentDone,
+    setOpponentStarted,
     setRoundResult,
     setMatchComplete,
     reset,
   } = useGameStore();
+
+  const [challenge, setChallenge] = useState<ChallengeInfo | null>(null);
+  const [challengeError, setChallengeError] = useState<string | null>(null);
 
   // Connect socket
   useEffect(() => {
@@ -46,6 +55,10 @@ export function useSocket() {
 
     socket.on('error', (data: { code: string; message: string }) => {
       console.error('Socket error:', data);
+      // Handle challenge-related errors
+      if (data.code === 'CHALLENGE_NOT_FOUND' || data.code === 'CANNOT_JOIN_OWN' || data.code === 'CHALLENGE_ERROR') {
+        setChallengeError(data.message);
+      }
     });
 
     // Queue events
@@ -75,6 +88,10 @@ export function useSocket() {
       addOpponentMove(data.move);
     });
 
+    socket.on('opponent_started', (data: { startedAt: number }) => {
+      setOpponentStarted(data.startedAt);
+    });
+
     socket.on('opponent_done', (data: ServerEvents['opponent_done']) => {
       setOpponentDone(data.timeMs);
     });
@@ -96,6 +113,16 @@ export function useSocket() {
 
     socket.on('opponent_disconnect', () => {
       console.log('Opponent disconnected');
+    });
+
+    // Challenge events
+    socket.on('challenge_created', (data: { code: string; puzzleSize: PuzzleSize }) => {
+      setChallenge({ code: data.code, puzzleSize: data.puzzleSize });
+      setChallengeError(null);
+    });
+
+    socket.on('challenge_cancelled', () => {
+      setChallenge(null);
     });
 
     return () => {
@@ -154,6 +181,28 @@ export function useSocket() {
     }
   }, [reset]);
 
+  // Challenge actions
+  const createChallenge = useCallback((size: PuzzleSize) => {
+    if (socketRef.current) {
+      setChallengeError(null);
+      socketRef.current.emit('challenge_create', { puzzleSize: size });
+    }
+  }, []);
+
+  const cancelChallenge = useCallback(() => {
+    if (socketRef.current) {
+      socketRef.current.emit('challenge_cancel', {});
+      setChallenge(null);
+    }
+  }, []);
+
+  const joinChallenge = useCallback((code: string) => {
+    if (socketRef.current) {
+      setChallengeError(null);
+      socketRef.current.emit('challenge_join', { code: code.toUpperCase() });
+    }
+  }, []);
+
   return {
     socket: socketRef.current,
     joinQueue,
@@ -163,5 +212,11 @@ export function useSocket() {
     sendSolveComplete,
     sendRematch,
     sendRequeue,
+    // Challenge
+    challenge,
+    challengeError,
+    createChallenge,
+    cancelChallenge,
+    joinChallenge,
   };
 }
