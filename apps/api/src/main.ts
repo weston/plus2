@@ -5,10 +5,15 @@ import { AppModule } from './app.module';
 
 class CustomIoAdapter extends IoAdapter {
   createIOServer(port: number, options?: any): any {
+    const corsOrigins = process.env.CORS_ORIGIN?.split(',') || [
+      'http://localhost:3000',
+      'https://plus2.me',
+      'https://www.plus2.me',
+    ];
     const server = super.createIOServer(port, {
       ...options,
       cors: {
-        origin: '*',
+        origin: corsOrigins,
         methods: ['GET', 'POST'],
         credentials: true,
       },
@@ -23,7 +28,11 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.enableCors({
-    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+    origin: process.env.CORS_ORIGIN?.split(',') || [
+      'http://localhost:3000',
+      'https://plus2.me',
+      'https://www.plus2.me',
+    ],
     credentials: true,
   });
 
