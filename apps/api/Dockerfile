@@ -14,7 +14,6 @@ RUN npm ci --workspace=@plus2/shared --workspace=@plus2/api
 # Copy source
 COPY packages/shared ./packages/shared
 COPY apps/api ./apps/api
-COPY tsconfig*.json ./
 
 # Build shared package first, then API
 RUN npm run build --workspace=@plus2/shared
