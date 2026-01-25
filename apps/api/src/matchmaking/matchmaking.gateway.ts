@@ -25,6 +25,9 @@ interface AuthenticatedSocket extends Socket {
   ghostRaceId?: string;
 }
 
+// Unique ID for each solve in a match (matchId:round)
+type SolveId = string;
+
 @WebSocketGateway({
   cors: {
     origin: '*',
@@ -59,6 +62,11 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       player2SolveStartedAt?: number;
       player1SolveTimeout?: NodeJS.Timeout;
       player2SolveTimeout?: NodeJS.Timeout;
+      // Server-authoritative solve timeline (for deterministic replay)
+      inspectionStartServerMs?: number;
+      inspectionEndServerMs?: number;
+      player1SolveStartServerMs?: number;
+      player2SolveStartServerMs?: number;
     }
   > = new Map();
 
@@ -117,7 +125,6 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   ) {}
 
   afterInit() {
-    console.log('MatchmakingGateway initialized, starting matchmaking loop');
     this.startMatchmakingLoop();
   }
 
@@ -155,12 +162,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       socket.userId = payload.sub;
       socket.username = payload.username;
 
-      console.log(`User ${socket.username} connected (userId: ${socket.userId})`);
-
       // Check if user has an active match and rejoin them
-      console.log(`Active matches: ${this.activeMatches.size}`);
       for (const [matchId, matchState] of this.activeMatches.entries()) {
-        console.log(`Checking match ${matchId}: p1=${matchState.player1Id}, p2=${matchState.player2Id}`);
         if (matchState.player1Id === socket.userId || matchState.player2Id === socket.userId) {
           socket.matchId = matchId;
           socket.join(matchId);
@@ -170,19 +173,15 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
           if (isPlayer1 && matchState.player1AbandonTimeout) {
             clearTimeout(matchState.player1AbandonTimeout);
             matchState.player1AbandonTimeout = undefined;
-            console.log(`Cancelled abandon timeout for player1 (${socket.username})`);
           } else if (!isPlayer1 && matchState.player2AbandonTimeout) {
             clearTimeout(matchState.player2AbandonTimeout);
             matchState.player2AbandonTimeout = undefined;
-            console.log(`Cancelled abandon timeout for player2 (${socket.username})`);
           }
 
           // Notify opponent that player reconnected
           const opponentId = isPlayer1 ? matchState.player2Id : matchState.player1Id;
           const opponentSocket = this.findSocketByUserId(opponentId);
           opponentSocket?.emit('opponent_reconnect', {});
-
-          console.log(`User ${socket.username} rejoined match ${matchId}`);
 
           // Send current match state to the reconnected user
           const match = await this.matchesService.getMatch(matchId);
@@ -226,8 +225,6 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   }
 
   handleDisconnect(socket: AuthenticatedSocket) {
-    console.log(`User ${socket.username || socket.id} disconnected`);
-
     // Remove from queue and delete any pending challenges
     if (socket.userId) {
       this.matchmakingService.removeFromQueue(socket.userId);
@@ -262,7 +259,6 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         const abandonTimeout = setTimeout(async () => {
           const currentMatch = this.activeMatches.get(matchId);
           if (currentMatch) {
-            console.log(`Forfeiting match ${matchId} due to disconnect timeout by user ${forfeitingUserId}`);
             await this.handleForfeit(matchId, forfeitingUserId);
           }
         }, 30000); // 30 second grace period
@@ -273,9 +269,29 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         } else {
           match.player2AbandonTimeout = abandonTimeout;
         }
-        console.log(`Set abandon timeout for ${isPlayer1 ? 'player1' : 'player2'} (${socket.username}) on match ${matchId}`);
       }
     }
+  }
+
+  // ==========================================================================
+  // NTP-LITE CLOCK SYNCHRONIZATION
+  // ==========================================================================
+
+  /**
+   * NTP-lite ping handler for clock synchronization.
+   * Client sends { clientSendPerfMs } and we respond immediately with server time.
+   * Client uses this to calculate serverOffsetMs for deterministic replay.
+   */
+  @SubscribeMessage('clock_sync')
+  handleClockSync(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { clientSendPerfMs: number },
+  ) {
+    // Respond immediately with server time
+    socket.emit('clock_sync_response', {
+      clientSendPerfMs: data.clientSendPerfMs,
+      serverNowMs: Date.now(),
+    });
   }
 
   @SubscribeMessage('queue_join')
@@ -351,86 +367,98 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   @SubscribeMessage('move')
   async handleMove(
     @ConnectedSocket() socket: AuthenticatedSocket,
-    @MessageBody() data: { seq: number; move: string; clientTs: number },
+    @MessageBody() data: { seq: number; move: string; tMs: number },
   ) {
-    if (!socket.matchId || !socket.userId) {
-      console.log('Move rejected - no matchId or userId', { matchId: socket.matchId, userId: socket.userId });
-      return;
-    }
+    if (!socket.matchId || !socket.userId) return;
 
     const match = this.activeMatches.get(socket.matchId);
-    if (!match) {
-      console.log('Move rejected - match not found', { matchId: socket.matchId });
-      return;
-    }
-
-    console.log(`Move from ${socket.username}: ${data.move} (seq: ${data.seq})`);
+    if (!match) return;
     const serverTs = Date.now();
 
     const isPlayer1 = socket.userId === match.player1Id;
     const isRotation = this.ROTATION_MOVES.includes(data.move);
 
     // Check if this is the first non-rotation move (starts the solve)
-    const playerSolveStarted = isPlayer1 ? match.player1SolveStartedAt : match.player2SolveStartedAt;
+    const playerSolveStartServerMs = isPlayer1 ? match.player1SolveStartServerMs : match.player2SolveStartServerMs;
     let solveJustStarted = false;
+    let solveStartServerMs = playerSolveStartServerMs;
 
-    if (!isRotation && !playerSolveStarted) {
+    if (!isRotation && !playerSolveStartServerMs) {
       // This is the first non-rotation move - player started solving
-      // Capture these values for the timeout callback
+      // SERVER decides the authoritative solve start time
+      solveStartServerMs = serverTs;
+
       const matchIdForTimeout = socket.matchId;
       const userIdForTimeout = socket.userId;
       if (isPlayer1) {
         match.player1SolveStartedAt = serverTs;
-        // Set 10-minute timeout for this solve
+        match.player1SolveStartServerMs = serverTs;
         match.player1SolveTimeout = setTimeout(
           () => this.handleSolveTimeout(matchIdForTimeout, userIdForTimeout),
           this.SOLVE_TIMEOUT_MS,
         );
       } else {
         match.player2SolveStartedAt = serverTs;
+        match.player2SolveStartServerMs = serverTs;
         match.player2SolveTimeout = setTimeout(
           () => this.handleSolveTimeout(matchIdForTimeout, userIdForTimeout),
           this.SOLVE_TIMEOUT_MS,
         );
       }
       solveJustStarted = true;
-      console.log(`Player ${socket.username} started solving at ${serverTs}`);
     }
 
-    // Record move in database
+    // Generate solveId for this solve
+    const solveId: SolveId = `${socket.matchId}:${match.currentRound}`;
+
+    // Record move in database (convert tMs to clientTs for backward compatibility)
+    const clientTs = solveStartServerMs ? solveStartServerMs + data.tMs : serverTs;
     await this.matchesService.recordMove(
       socket.matchId,
       match.currentRound,
       socket.userId,
-      { seq: data.seq, move: data.move, clientTs: data.clientTs, serverTs },
+      { seq: data.seq, move: data.move, clientTs, serverTs },
     );
 
-    // Relay to opponent
+    // Relay to opponent with relative timestamp for deterministic replay
     const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
     const opponentSocket = this.findSocketByUserId(opponentId);
 
-    if (opponentSocket) {
-      console.log(`Relaying move to opponent: ${data.move}`);
-    } else {
-      console.log(`Could not find opponent socket for userId: ${opponentId}`);
+    // If solve just started, emit solve_start event to BOTH players
+    if (solveJustStarted) {
+      const solveStartData = {
+        solveId,
+        solveStartServerMs,
+        inspectionStartServerMs: match.inspectionStartServerMs,
+        inspectionEndServerMs: match.inspectionEndServerMs,
+      };
+
+      // Send to the solver (so they have the authoritative start time)
+      socket.emit('solve_start', solveStartData);
+
+      // Send to opponent
+      if (opponentSocket) {
+        opponentSocket.emit('opponent_solve_start', solveStartData);
+      }
+
+      // Log solve start (temporary debugging)
+      console.log(`[SYNC] Solve started: ${solveId}, solveStartServerMs=${solveStartServerMs}`);
     }
 
-    // If solve just started, notify opponent with the start time
-    if (solveJustStarted && opponentSocket) {
-      opponentSocket.emit('opponent_started', {
-        startedAt: serverTs,
-      });
-    }
-
+    // Relay move to opponent with tMs for deterministic replay
     opponentSocket?.emit('opponent_move', {
+      solveId,
       seq: data.seq,
       move: data.move,
-      serverTs,
+      tMs: data.tMs, // Relative timestamp from solve start
     });
   }
 
   @SubscribeMessage('solve_complete')
-  async handleSolveComplete(@ConnectedSocket() socket: AuthenticatedSocket) {
+  async handleSolveComplete(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { timeMs: number | null },
+  ) {
     if (!socket.matchId || !socket.userId) return;
 
     const match = this.activeMatches.get(socket.matchId);
@@ -446,15 +474,20 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       match.player2SolveTimeout = undefined;
     }
 
+    // Client sends their already-calculated time - we just pass it through
     const result = await this.matchesService.recordSolveComplete(
       socket.matchId,
       match.currentRound,
       socket.userId,
+      data?.timeMs, // Use client's time directly
     );
 
     if (!result) return;
 
-    // Notify opponent of completion
+    // Send the SAME time to BOTH players
+    socket.emit('my_solve_time', { timeMs: result.timeMs });
+
+    // Notify opponent of completion with the SAME time
     const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
     const opponentSocket = this.findSocketByUserId(opponentId);
     opponentSocket?.emit('opponent_done', { timeMs: result.timeMs });
@@ -519,8 +552,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         puzzleSize: challenge.puzzleSize,
       });
 
-      console.log(`Challenge ${challenge.code} created by ${socket.username}`);
-    } catch (error) {
+          } catch (error) {
       socket.emit('error', { code: 'CHALLENGE_ERROR', message: 'Failed to create challenge' });
     }
   }
@@ -630,8 +662,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       // Start first round after a short delay
       setTimeout(() => this.startSoloRound(session.id), 2000);
 
-      console.log(`Solo recording session ${session.id} started by ${socket.username}`);
-    } catch (error) {
+          } catch (error) {
       socket.emit('error', { code: 'SOLO_ERROR', message: 'Failed to start solo session' });
     }
   }
@@ -911,8 +942,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       // Start first round after a short delay
       setTimeout(() => this.startGhostRaceRound(raceId), 2000);
 
-      console.log(`Ghost race ${raceId} started by ${socket.username} vs ${ghostUser.username}`);
-    } catch (error) {
+          } catch (error) {
       console.error('Ghost race start error:', error);
       socket.emit('error', { code: 'GHOST_ERROR', message: 'Failed to start ghost race' });
     }
@@ -1298,6 +1328,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // Reset solve start times for the new round
     matchState.player1SolveStartedAt = undefined;
     matchState.player2SolveStartedAt = undefined;
+    matchState.player1SolveStartServerMs = undefined;
+    matchState.player2SolveStartServerMs = undefined;
     // Clear any existing solve timeouts
     if (matchState.player1SolveTimeout) {
       clearTimeout(matchState.player1SolveTimeout);
@@ -1311,19 +1343,31 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // Create solve record with scramble
     const solve = await this.matchesService.startRound(matchId, matchState.currentRound);
 
-    const inspectionStartsAt = Date.now() + 500; // 500ms buffer for network latency
+    const serverNow = Date.now();
+    const inspectionStartsAt = serverNow + 500; // 500ms buffer for network latency
+
+    // Track server-authoritative times for this solve
+    matchState.inspectionStartServerMs = inspectionStartsAt;
+    matchState.inspectionEndServerMs = inspectionStartsAt + INSPECTION_DURATION_MS;
+
+    // Generate solveId for logging
+    const solveId: SolveId = `${matchId}:${matchState.currentRound}`;
 
     // Notify both players (look up sockets dynamically)
     const roundData = {
       round: matchState.currentRound,
       scramble: solve.scramble,
       inspectionStartsAt,
+      // Include server-authoritative times for deterministic replay
+      inspectionStartServerMs: matchState.inspectionStartServerMs,
+      inspectionEndServerMs: matchState.inspectionEndServerMs,
+      solveId,
     };
 
     const p1Socket = this.findSocketByUserId(matchState.player1Id);
     const p2Socket = this.findSocketByUserId(matchState.player2Id);
 
-    console.log('Starting round', { matchId, round: matchState.currentRound, p1Found: !!p1Socket, p2Found: !!p2Socket });
+    console.log(`[SYNC] Round start: ${solveId}, inspectionStartServerMs=${matchState.inspectionStartServerMs}`);
 
     p1Socket?.emit('round_start', roundData);
     p2Socket?.emit('round_start', roundData);
@@ -1340,12 +1384,61 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (!matchState) return;
 
     const solveStartsAt = Date.now();
+    const solveId: SolveId = `${matchId}:${matchState.currentRound}`;
 
     const p1Socket = this.findSocketByUserId(matchState.player1Id);
     const p2Socket = this.findSocketByUserId(matchState.player2Id);
 
-    p1Socket?.emit('inspection_end', { solveStartsAt });
-    p2Socket?.emit('inspection_end', { solveStartsAt });
+    // For any player who hasn't started yet, set their solve start to inspection end
+    // This ensures both players have a deterministic solve start time
+    const inspectionEndData = {
+      solveStartsAt,
+      solveStartServerMs: solveStartsAt,
+      solveId,
+    };
+
+    // If player 1 hasn't started yet, set their solve start now
+    if (!matchState.player1SolveStartServerMs) {
+      matchState.player1SolveStartServerMs = solveStartsAt;
+      matchState.player1SolveStartedAt = solveStartsAt;
+      p1Socket?.emit('solve_start', {
+        solveId,
+        solveStartServerMs: solveStartsAt,
+        inspectionStartServerMs: matchState.inspectionStartServerMs,
+        inspectionEndServerMs: matchState.inspectionEndServerMs,
+      });
+      // Notify opponent that p1 started (at inspection end)
+      p2Socket?.emit('opponent_solve_start', {
+        solveId,
+        solveStartServerMs: solveStartsAt,
+        inspectionStartServerMs: matchState.inspectionStartServerMs,
+        inspectionEndServerMs: matchState.inspectionEndServerMs,
+      });
+      console.log(`[SYNC] P1 solve started at inspection end: ${solveId}, solveStartServerMs=${solveStartsAt}`);
+    }
+
+    // If player 2 hasn't started yet, set their solve start now
+    if (!matchState.player2SolveStartServerMs) {
+      matchState.player2SolveStartServerMs = solveStartsAt;
+      matchState.player2SolveStartedAt = solveStartsAt;
+      p2Socket?.emit('solve_start', {
+        solveId,
+        solveStartServerMs: solveStartsAt,
+        inspectionStartServerMs: matchState.inspectionStartServerMs,
+        inspectionEndServerMs: matchState.inspectionEndServerMs,
+      });
+      // Notify opponent that p2 started (at inspection end)
+      p1Socket?.emit('opponent_solve_start', {
+        solveId,
+        solveStartServerMs: solveStartsAt,
+        inspectionStartServerMs: matchState.inspectionStartServerMs,
+        inspectionEndServerMs: matchState.inspectionEndServerMs,
+      });
+      console.log(`[SYNC] P2 solve started at inspection end: ${solveId}, solveStartServerMs=${solveStartsAt}`);
+    }
+
+    p1Socket?.emit('inspection_end', inspectionEndData);
+    p2Socket?.emit('inspection_end', inspectionEndData);
   }
 
   private async handleRoundComplete(
@@ -1473,8 +1566,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const matchState = this.activeMatches.get(matchId);
     if (!matchState) return;
 
-    console.log(`Solve timeout for user ${userId} in match ${matchId}`);
-
+    
     const isPlayer1 = userId === matchState.player1Id;
 
     // Clear the timeout reference
@@ -1520,8 +1612,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const matchState = this.activeMatches.get(matchId);
     if (!matchState) return;
 
-    console.log(`Match ${matchId} forfeited by user ${forfeitingUserId}`);
-
+    
     // Clear all timers
     if (matchState.inspectionTimer) {
       clearTimeout(matchState.inspectionTimer);

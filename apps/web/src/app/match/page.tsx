@@ -18,6 +18,55 @@ function isRotationMove(move: string): boolean {
   return ROTATION_MOVES.includes(move);
 }
 
+// Format time in MM:SS.cc or SS.cc format
+function formatTime(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const centiseconds = Math.floor((ms % 1000) / 10);
+
+  if (minutes > 0) {
+    return `${minutes}:${seconds.toString().padStart(2, '0')}.${centiseconds.toString().padStart(2, '0')}`;
+  }
+  return `${seconds}.${centiseconds.toString().padStart(2, '0')}`;
+}
+
+// Hook for deterministic opponent timer display
+function useOpponentTimerDisplay() {
+  const { opponentLocalSolveStartPerf, opponentTime, opponentSolveReceivedAt } = useGameStore();
+  const [displayTime, setDisplayTime] = useState<number>(0);
+
+  useEffect(() => {
+    // If we have final time, show it
+    if (opponentTime !== null) {
+      setDisplayTime(opponentTime);
+      return;
+    }
+
+    // If opponent hasn't started, don't show timer
+    if (opponentLocalSolveStartPerf === null) {
+      setDisplayTime(0);
+      return;
+    }
+
+    // Run timer based on deterministic solve start
+    const interval = setInterval(() => {
+      const nowPerf = performance.now();
+      const elapsed = Math.max(0, nowPerf - opponentLocalSolveStartPerf);
+      setDisplayTime(elapsed);
+    }, 10);
+
+    return () => clearInterval(interval);
+  }, [opponentLocalSolveStartPerf, opponentTime]);
+
+  return {
+    displayTime,
+    isRunning: opponentLocalSolveStartPerf !== null && opponentTime === null,
+    // Fallback: use legacy field if deterministic isn't set
+    hasStarted: opponentLocalSolveStartPerf !== null || opponentSolveReceivedAt !== null,
+  };
+}
+
 export default function MatchPage() {
   const router = useRouter();
   const { user } = useAuthStore();
@@ -37,13 +86,18 @@ export default function MatchPage() {
     opponentMoves,
     myTime,
     opponentTime,
-    opponentSolveStartedAt,
+    opponentSolveReceivedAt, // Local time when we received opponent_started
+    opponentLocalSolveStartPerf, // Deterministic opponent solve start
     matchWinner,
     mmrDelta,
     newMmr,
     newLeague,
     addMyMove,
     setSolveComplete,
+    setMySolveStart,
+    mySolveStartServerMs,
+    myLocalSolveStartPerf,
+    solveId,
   } = useGameStore();
 
   const { sendMove, sendSolveComplete, sendRematch, sendRequeue } = useSocket();
@@ -55,6 +109,9 @@ export default function MatchPage() {
   const [myTimerRunning, setMyTimerRunning] = useState(false);
   const [isSolved, setIsSolved] = useState(false);
   const [inspectionTimeLeft, setInspectionTimeLeft] = useState(15);
+
+  // Deterministic opponent timer
+  const opponentTimer = useOpponentTimerDisplay();
 
   // Redirect if no match
   useEffect(() => {
@@ -89,12 +146,17 @@ export default function MatchPage() {
   // Auto-start timer when inspection ends (phase changes to 'solving')
   useEffect(() => {
     if (phase === 'solving' && !myTimerStart && !isSolved) {
-      // Use solveStartsAt from server if available, otherwise use current time
-      const startTime = solveStartsAt || Date.now();
-      setMyTimerStart(startTime);
+      const nowPerf = performance.now();
+      const nowDate = Date.now();
+      // Always use client's local time for timer display (server calculates final time)
+      setMyTimerStart(nowDate);
       setMyTimerRunning(true);
+      // Set local solve start perf for tMs calculation (if not already set by a move)
+      if (myLocalSolveStartPerf === null) {
+        setMySolveStart(nowDate, nowPerf);
+      }
     }
-  }, [phase, myTimerStart, isSolved, solveStartsAt]);
+  }, [phase, myTimerStart, isSolved, myLocalSolveStartPerf, setMySolveStart]);
 
   // Handle move from keyboard
   const handleMove = useCallback(
@@ -103,18 +165,25 @@ export default function MatchPage() {
 
       moveSeqRef.current += 1;
       addMyMove(move);
-      sendMove(moveSeqRef.current, move);
 
       // If this is a non-rotation move and timer hasn't started, start it
+      // MUST set local solve start perf BEFORE sending move (for correct tMs calculation)
       if (!isRotationMove(move) && !myTimerStart) {
-        setMyTimerStart(Date.now());
+        const nowPerf = performance.now();
+        const nowDate = Date.now();
+        setMyTimerStart(nowDate);
         setMyTimerRunning(true);
+        // Set local solve start perf for tMs calculation
+        // Server will send authoritative time, but we need local ref for move timestamps
+        setMySolveStart(nowDate, nowPerf); // Use Date.now() as approximate server time until we get authoritative
         if (phase === 'inspecting') {
           setPhase('solving');
         }
       }
+
+      sendMove(moveSeqRef.current, move);
     },
-    [phase, addMyMove, sendMove, myTimerStart, setPhase]
+    [phase, addMyMove, sendMove, myTimerStart, setPhase, setMySolveStart]
   );
 
   // Handle spacebar for solve completion
@@ -129,14 +198,19 @@ export default function MatchPage() {
 
         setIsSolved(cubeSolved);
         setMyTimerRunning(false);
-        setSolveComplete(cubeSolved ? solveTime : null); // null time = DNF
-        sendSolveComplete();
+
+        // Log final time for debugging sync
+        console.log(`[SYNC] My solve complete: solveId=${solveId}, solverFinalMs=${solveTime}`);
+
+        // Don't set myTime locally - wait for server to send it back
+        // This ensures both players see the exact same value
+        sendSolveComplete(cubeSolved ? solveTime : null);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [phase, myTimerRunning, isSolved, myTimerStart, sendSolveComplete, setSolveComplete]);
+  }, [phase, myTimerRunning, isSolved, myTimerStart, sendSolveComplete, solveId]);
 
   // Use keybindings
   useKeybindings({
@@ -237,15 +311,16 @@ export default function MatchPage() {
             />
 
             <div className="text-center">
-              <Timer
-                startTime={opponentSolveStartedAt}
-                isRunning={opponentSolveStartedAt !== null && !opponentTime}
-                finalTime={opponentTime}
-              />
+              {/* Use deterministic timer display for opponent */}
+              <div className="timer text-6xl font-bold text-white">
+                {opponentTimer.isRunning || opponentTime !== null
+                  ? formatTime(opponentTime ?? opponentTimer.displayTime)
+                  : '0.00'}
+              </div>
               <p className="text-gray-400 mt-2">
-                {!opponentSolveStartedAt && phase === 'inspecting' && 'Inspecting...'}
-                {!opponentSolveStartedAt && phase === 'solving' && 'Inspecting...'}
-                {opponentSolveStartedAt && !opponentTime && 'Solving...'}
+                {!opponentTimer.hasStarted && phase === 'inspecting' && 'Inspecting...'}
+                {!opponentTimer.hasStarted && phase === 'solving' && 'Inspecting...'}
+                {opponentTimer.hasStarted && !opponentTime && 'Solving...'}
                 {opponentTime && 'Done!'}
               </p>
             </div>

@@ -67,6 +67,10 @@ resource "aws_ecs_task_definition" "api" {
           value = "3001"
         },
         {
+          name  = "DB_TYPE"
+          value = "postgres"
+        },
+        {
           name  = "DB_HOST"
           value = aws_db_instance.main.address
         },
@@ -75,7 +79,7 @@ resource "aws_ecs_task_definition" "api" {
           value = "5432"
         },
         {
-          name  = "DB_NAME"
+          name  = "DB_DATABASE"
           value = "plus2"
         },
         {
@@ -106,11 +110,11 @@ resource "aws_ecs_task_definition" "api" {
       }
 
       healthCheck = {
-        command     = ["CMD-SHELL", "curl -f http://localhost:3001/health || exit 1"]
+        command     = ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3001/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))\""]
         interval    = 30
-        timeout     = 5
+        timeout     = 10
         retries     = 3
-        startPeriod = 60
+        startPeriod = 120
       }
 
       essential = true
@@ -166,9 +170,6 @@ resource "aws_ecs_service" "api" {
   lifecycle {
     ignore_changes = [desired_count]
   }
-
-  # Wait for new task to be healthy before considering deployment complete
-  wait_for_steady_state = true
 
   depends_on = [aws_lb_listener.http]
 

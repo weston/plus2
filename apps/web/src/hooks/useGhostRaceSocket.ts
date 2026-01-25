@@ -89,13 +89,9 @@ export function useGhostRaceSocket() {
 
     socketRef.current = socket;
 
-    socket.on('connect', () => {
-      console.log('Ghost race socket connected');
-    });
+    socket.on('connect', () => {});
 
-    socket.on('disconnect', () => {
-      console.log('Ghost race socket disconnected');
-    });
+    socket.on('disconnect', () => {});
 
     socket.on('error', (data: { code: string; message: string }) => {
       console.error('Ghost race socket error:', data);
@@ -130,18 +126,18 @@ export function useGhostRaceSocket() {
       round: number;
       totalRounds: number;
       scramble: string;
-      inspectionStartsAt: number;
       ghostMoves: MoveRecord[];
       ghostTime: number | null;
       ghostInspectionStartAt: number;
     }) => {
+      // Use local client time for timer display (server calculates final time)
       setState((prev) => ({
         ...prev,
         phase: 'inspecting',
         currentRound: data.round,
         totalRounds: data.totalRounds,
         scramble: data.scramble,
-        inspectionStartsAt: data.inspectionStartsAt,
+        inspectionStartsAt: Date.now(),
         solveStartsAt: 0,
         ghostMoves: data.ghostMoves || [],
         ghostTime: data.ghostTime,
@@ -152,11 +148,12 @@ export function useGhostRaceSocket() {
       }));
     });
 
-    socket.on('ghost_race_inspection_end', (data: { solveStartsAt: number }) => {
+    socket.on('ghost_race_inspection_end', () => {
+      // Use local client time for timer display (server calculates final time)
       setState((prev) => ({
         ...prev,
         phase: 'solving',
-        solveStartsAt: data.solveStartsAt,
+        solveStartsAt: Date.now(),
       }));
     });
 
@@ -179,9 +176,7 @@ export function useGhostRaceSocket() {
       }));
     });
 
-    socket.on('ghost_race_dnf', (data: { reason: string }) => {
-      console.log('Ghost race DNF:', data.reason);
-    });
+    socket.on('ghost_race_dnf', () => {});
 
     socket.on('ghost_race_end', (data: {
       userWins: number;

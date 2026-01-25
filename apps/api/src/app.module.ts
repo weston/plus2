@@ -35,9 +35,13 @@ import { SoloModule } from './solo/solo.module';
           };
         }
 
+        // Enable SSL for remote databases (anything not localhost)
+        const dbHost = configService.get<string>('DB_HOST') || 'localhost';
+        const useSSL = dbHost !== 'localhost' && dbHost !== '127.0.0.1';
+
         return {
           type: 'postgres' as const,
-          host: configService.get<string>('DB_HOST') || 'localhost',
+          host: dbHost,
           port: configService.get<number>('DB_PORT') || 5432,
           username: configService.get<string>('DB_USERNAME') || 'postgres',
           password: configService.get<string>('DB_PASSWORD') || 'postgres',
@@ -47,6 +51,7 @@ import { SoloModule } from './solo/solo.module';
           migrationsRun: true, // Auto-run migrations on startup
           synchronize: !isProd,
           logging: !isProd,
+          ssl: useSSL ? { rejectUnauthorized: false } : false,
         };
       },
     }),

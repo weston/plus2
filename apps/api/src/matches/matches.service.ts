@@ -158,6 +158,7 @@ export class MatchesService {
     matchId: string,
     roundNumber: number,
     userId: string,
+    clientTimeMs?: number | null, // Client-calculated time (player is authority of their own time)
   ): Promise<{
     timeMs: number;
     roundComplete: boolean;
@@ -180,15 +181,17 @@ export class MatchesService {
     if (isPlayer1) {
       solve.p1Status = 'completed';
       solve.p1SolveEndAt = now;
-      solve.p1TimeMs = solve.p1SolveStartAt
-        ? now.getTime() - solve.p1SolveStartAt.getTime()
-        : 0;
+      // Use client-calculated time if provided, otherwise fall back to server calculation
+      solve.p1TimeMs = clientTimeMs != null
+        ? clientTimeMs
+        : (solve.p1SolveStartAt ? now.getTime() - solve.p1SolveStartAt.getTime() : 0);
     } else {
       solve.p2Status = 'completed';
       solve.p2SolveEndAt = now;
-      solve.p2TimeMs = solve.p2SolveStartAt
-        ? now.getTime() - solve.p2SolveStartAt.getTime()
-        : 0;
+      // Use client-calculated time if provided, otherwise fall back to server calculation
+      solve.p2TimeMs = clientTimeMs != null
+        ? clientTimeMs
+        : (solve.p2SolveStartAt ? now.getTime() - solve.p2SolveStartAt.getTime() : 0);
     }
 
     const timeMs = isPlayer1 ? solve.p1TimeMs! : solve.p2TimeMs!;

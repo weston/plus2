@@ -238,13 +238,12 @@ export class SoloService {
     aroundMmr?: number,
   ): Promise<SoloSession | null> {
     // Get IDs of ghost sessions this user has already played
-    const playedSessions = await this.ghostRaceRepository
-      .createQueryBuilder('race')
-      .select('race.ghostSessionId')
-      .where('race.racerId = :userId', { userId: excludeUserId })
-      .getRawMany();
+    const playedRaces = await this.ghostRaceRepository.find({
+      where: { racerId: excludeUserId },
+      select: ['ghostSessionId'],
+    });
 
-    const playedSessionIds = playedSessions.map(r => r.race_ghost_session_id);
+    const playedSessionIds = playedRaces.map(r => r.ghostSessionId);
 
     const query = this.sessionRepository
       .createQueryBuilder('session')
@@ -305,13 +304,12 @@ export class SoloService {
     puzzleSize: PuzzleSize,
   ): Promise<number> {
     // Get IDs of ghost sessions the racer has already played
-    const playedSessions = await this.ghostRaceRepository
-      .createQueryBuilder('race')
-      .select('race.ghostSessionId')
-      .where('race.racerId = :racerId', { racerId })
-      .getRawMany();
+    const playedRaces = await this.ghostRaceRepository.find({
+      where: { racerId },
+      select: ['ghostSessionId'],
+    });
 
-    const playedSessionIds = playedSessions.map(r => r.race_ghost_session_id);
+    const playedSessionIds = playedRaces.map(r => r.ghostSessionId);
 
     const query = this.sessionRepository
       .createQueryBuilder('session')
@@ -339,13 +337,12 @@ export class SoloService {
     isOldGhost: boolean;
   } | null> {
     // Get IDs of ghost sessions the racer has already played
-    const playedSessions = await this.ghostRaceRepository
-      .createQueryBuilder('race')
-      .select('race.ghostSessionId')
-      .where('race.racerId = :racerId', { racerId })
-      .getRawMany();
+    const playedRaces = await this.ghostRaceRepository.find({
+      where: { racerId },
+      select: ['ghostSessionId'],
+    });
 
-    const playedSessionIds = playedSessions.map(r => r.race_ghost_session_id);
+    const playedSessionIds = playedRaces.map(r => r.ghostSessionId);
 
     const query = this.sessionRepository
       .createQueryBuilder('session')

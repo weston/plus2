@@ -45,13 +45,13 @@ variable "api_image_tag" {
 variable "api_cpu" {
   description = "Fargate CPU units (256 = 0.25 vCPU)"
   type        = number
-  default     = 256
+  default     = 512
 }
 
 variable "api_memory" {
   description = "Fargate memory in MB"
   type        = number
-  default     = 512
+  default     = 1024
 }
 
 variable "api_desired_count" {

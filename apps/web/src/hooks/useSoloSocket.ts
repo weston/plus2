@@ -66,13 +66,9 @@ export function useSoloSocket() {
 
     socketRef.current = socket;
 
-    socket.on('connect', () => {
-      console.log('Solo socket connected');
-    });
+    socket.on('connect', () => {});
 
-    socket.on('disconnect', () => {
-      console.log('Solo socket disconnected');
-    });
+    socket.on('disconnect', () => {});
 
     socket.on('error', (data: { code: string; message: string }) => {
       console.error('Solo socket error:', data);
@@ -99,25 +95,26 @@ export function useSoloSocket() {
       round: number;
       totalRounds: number;
       scramble: string;
-      inspectionStartsAt: number;
     }) => {
+      // Use local client time for timer display (server calculates final time)
       setState((prev) => ({
         ...prev,
         phase: 'inspecting',
         currentRound: data.round,
         totalRounds: data.totalRounds,
         scramble: data.scramble,
-        inspectionStartsAt: data.inspectionStartsAt,
+        inspectionStartsAt: Date.now(),
         solveStartsAt: 0,
         lastSolveTime: null,
       }));
     });
 
-    socket.on('solo_inspection_end', (data: { solveStartsAt: number }) => {
+    socket.on('solo_inspection_end', () => {
+      // Use local client time for timer display (server calculates final time)
       setState((prev) => ({
         ...prev,
         phase: 'solving',
-        solveStartsAt: data.solveStartsAt,
+        solveStartsAt: Date.now(),
       }));
     });
 
@@ -134,9 +131,7 @@ export function useSoloSocket() {
       }));
     });
 
-    socket.on('solo_dnf', (data: { reason: string }) => {
-      console.log('Solo DNF:', data.reason);
-    });
+    socket.on('solo_dnf', () => {});
 
     socket.on('solo_end', (data: {
       solves: Array<{ round: number; timeMs: number | null; moveCount: number }>;
