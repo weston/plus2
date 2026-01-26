@@ -164,6 +164,9 @@ export default function MatchPage() {
     (move: string) => {
       if (phase !== 'inspecting' && phase !== 'solving') return;
 
+      // Apply move to cube immediately for instant visual feedback (bypasses React render cycle)
+      cubeRef.current?.applyMove(move);
+
       moveSeqRef.current += 1;
       addMyMove(move);
 

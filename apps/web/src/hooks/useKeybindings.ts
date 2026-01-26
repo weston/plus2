@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { DEFAULT_KEYBINDINGS } from '@plus2/shared';
 
 interface UseKeybindingsOptions {
@@ -14,6 +14,13 @@ export function useKeybindings({ enabled, onMove }: UseKeybindingsOptions) {
 
   // Create reverse mapping (key -> move)
   const keyToMove = useRef<Record<string, string>>({});
+  // Store callback in ref to avoid re-attaching listener when callback changes
+  const onMoveRef = useRef(onMove);
+
+  // Keep ref updated with latest callback
+  useEffect(() => {
+    onMoveRef.current = onMove;
+  }, [onMove]);
 
   useEffect(() => {
     // Bindings are key->move format, preserve case for uppercase wide moves
@@ -26,7 +33,7 @@ export function useKeybindings({ enabled, onMove }: UseKeybindingsOptions) {
     setIsLoaded(true);
   }, []);
 
-  // Handle keydown
+  // Handle keydown - only re-attach when enabled/isLoaded changes, not when onMove changes
   useEffect(() => {
     if (!enabled || !isLoaded) return;
 
@@ -45,13 +52,13 @@ export function useKeybindings({ enabled, onMove }: UseKeybindingsOptions) {
 
       if (move) {
         e.preventDefault();
-        onMove(move);
+        onMoveRef.current(move);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [enabled, isLoaded, onMove]);
+  }, [enabled, isLoaded]); // Removed onMove from deps - using ref instead
 
   return {
     bindings,

@@ -164,6 +164,8 @@ export default function PracticePage() {
     const currentPhase = phaseRef.current;
 
     if (currentPhase === 'inspecting') {
+      // Apply move immediately for instant visual feedback
+      cubeRef.current?.applyMove(move);
       // Rotations during inspection don't start the solve
       if (rotation) {
         setMoves(prev => [...prev, move]);
@@ -182,6 +184,8 @@ export default function PracticePage() {
     }
 
     if (currentPhase === 'solving') {
+      // Apply move immediately for instant visual feedback
+      cubeRef.current?.applyMove(move);
       moveSeqRef.current += 1;
       setMoves(prev => [...prev, move]);
     }

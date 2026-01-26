@@ -64,6 +64,46 @@ export class MatchesController {
     };
   }
 
+  @Get('ghost-races')
+  @UseGuards(JwtAuthGuard)
+  async getGhostRaces(
+    @Request() req: { user: { id: string } },
+    @Query('page') page = 1,
+    @Query('limit') limit = 20,
+  ) {
+    if (!this.soloService) {
+      return { races: [], total: 0, page: Number(page), pageSize: Number(limit) };
+    }
+
+    const { races, total } = await this.soloService.getUserGhostRaces(
+      req.user.id,
+      Number(page),
+      Number(limit),
+    );
+
+    return {
+      races: races.map((r) => ({
+        id: r.id,
+        type: 'ghost',
+        puzzleSize: r.puzzleSize,
+        ghostUser: r.ghostUser
+          ? { id: r.ghostUser.id, username: r.ghostUser.username }
+          : { id: r.ghostUserId, username: 'Unknown' },
+        racerScore: r.racerScore,
+        ghostScore: r.ghostScore,
+        racerWon: r.racerWon,
+        racerMmrBefore: r.racerMmrBefore,
+        racerMmrAfter: r.racerMmrAfter,
+        ghostMmrAtRecording: r.ghostMmrAtRecording,
+        isOldGhost: r.isOldGhost,
+        createdAt: r.createdAt,
+      })),
+      total,
+      page: Number(page),
+      pageSize: Number(limit),
+    };
+  }
+
   @Get(':id')
   async getMatch(@Param('id') id: string) {
     const match = await this.matchesService.getMatchWithSolves(id);
@@ -113,46 +153,6 @@ export class MatchesController {
         p2IsWinner: s.p2IsWinner,
         p2Status: s.p2Status,
       })),
-    };
-  }
-
-  @Get('ghost-races')
-  @UseGuards(JwtAuthGuard)
-  async getGhostRaces(
-    @Request() req: { user: { id: string } },
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
-  ) {
-    if (!this.soloService) {
-      return { races: [], total: 0, page: Number(page), pageSize: Number(limit) };
-    }
-
-    const { races, total } = await this.soloService.getUserGhostRaces(
-      req.user.id,
-      Number(page),
-      Number(limit),
-    );
-
-    return {
-      races: races.map((r) => ({
-        id: r.id,
-        type: 'ghost',
-        puzzleSize: r.puzzleSize,
-        ghostUser: r.ghostUser
-          ? { id: r.ghostUser.id, username: r.ghostUser.username }
-          : { id: r.ghostUserId, username: 'Unknown' },
-        racerScore: r.racerScore,
-        ghostScore: r.ghostScore,
-        racerWon: r.racerWon,
-        racerMmrBefore: r.racerMmrBefore,
-        racerMmrAfter: r.racerMmrAfter,
-        ghostMmrAtRecording: r.ghostMmrAtRecording,
-        isOldGhost: r.isOldGhost,
-        createdAt: r.createdAt,
-      })),
-      total,
-      page: Number(page),
-      pageSize: Number(limit),
     };
   }
 }

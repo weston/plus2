@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
+import { useEffect, useRef, useImperativeHandle, forwardRef, memo } from 'react';
 import type { PuzzleSize } from '@plus2/shared';
 
 export interface TwistyCubeHandle {
   checkSolved: () => Promise<boolean>;
+  applyMove: (move: string) => void;
 }
 
 interface TwistyCubeProps {
@@ -26,7 +27,51 @@ const puzzleMap: Record<PuzzleSize, CubingPuzzle> = {
   '5x5': '5x5x5',
 };
 
-export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function TwistyCube({
+// All 24 possible cube orientations
+const ORIENTATIONS = [
+  '', 'x', 'x2', "x'",
+  'y', 'y x', 'y x2', "y x'",
+  'y2', 'y2 x', 'y2 x2', "y2 x'",
+  "y'", "y' x", "y' x2", "y' x'",
+  'z', 'z x', 'z x2', "z x'",
+  "z'", "z' x", "z' x2", "z' x'"
+];
+
+// Cache for pre-computed solved patterns per puzzle size
+const solvedPatternsCache = new Map<PuzzleSize, any[]>();
+// Cache for loaded modules
+let algModule: any = null;
+let puzzlesModule: any = null;
+
+// Pre-compute solved patterns for a puzzle size
+async function getSolvedPatterns(puzzleSize: PuzzleSize): Promise<any[]> {
+  const cached = solvedPatternsCache.get(puzzleSize);
+  if (cached) return cached;
+
+  // Load modules once
+  if (!algModule) {
+    algModule = await import('cubing/alg');
+  }
+  if (!puzzlesModule) {
+    puzzlesModule = await import('cubing/puzzles');
+  }
+
+  const { Alg } = algModule;
+  const { puzzles } = puzzlesModule;
+
+  const kpuzzle = await puzzles[puzzleMap[puzzleSize]].kpuzzle();
+  const solvedState = kpuzzle.defaultPattern();
+
+  // Pre-compute all 24 rotated solved patterns
+  const patterns = ORIENTATIONS.map(orient =>
+    orient ? solvedState.applyAlg(new Alg(orient)) : solvedState
+  );
+
+  solvedPatternsCache.set(puzzleSize, patterns);
+  return patterns;
+}
+
+const TwistyCubeInner = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function TwistyCube({
   puzzleSize,
   scramble = '',
   moves = [],
@@ -48,39 +93,43 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
     }
   }, [animationSpeed]);
 
-  // Expose checkSolved method to parent components
+  // Imperative method to apply a single move (avoids re-renders)
+  const applyMoveImperative = async (moveStr: string) => {
+    try {
+      const player = playerRef.current;
+      if (!player) return;
+
+      if (!algModule) {
+        algModule = await import('cubing/alg');
+      }
+      const { Alg } = algModule;
+      const alg = new Alg(moveStr);
+      for (const move of alg.units()) {
+        player.experimentalAddMove(move);
+        break;
+      }
+      // Increment lastMoveCount so useEffect doesn't re-apply this move
+      lastMoveCount.current += 1;
+    } catch (e) {
+      console.error('Failed to apply move:', e);
+    }
+  };
+
+  // Expose methods to parent components
   useImperativeHandle(ref, () => ({
     checkSolved: async () => {
       try {
         const player = playerRef.current;
         if (!player) return false;
 
-        const { Alg } = await import('cubing/alg');
-
         // Get current state from the player
         const currentPattern = await player.experimentalModel.currentPattern.get();
 
-        // Get the puzzle and its solved state
-        const { puzzles } = await import('cubing/puzzles');
-        const kpuzzle = await puzzles[puzzleMap[puzzleSize]].kpuzzle();
-        const solvedState = kpuzzle.defaultPattern();
+        // Get pre-computed solved patterns (cached after first call)
+        const solvedPatterns = await getSolvedPatterns(puzzleSize);
 
-        // All 24 possible cube orientations
-        const orientations = [
-          '', 'x', 'x2', "x'",
-          'y', 'y x', 'y x2', "y x'",
-          'y2', 'y2 x', 'y2 x2', "y2 x'",
-          "y'", "y' x", "y' x2", "y' x'",
-          'z', 'z x', 'z x2', "z x'",
-          "z'", "z' x", "z' x2", "z' x'"
-        ];
-
-        // Check if current pattern matches solved state in any orientation
-        for (const orient of orientations) {
-          const rotatedSolved = orient
-            ? solvedState.applyAlg(new Alg(orient))
-            : solvedState;
-
+        // Check if current pattern matches any of the 24 solved orientations
+        for (const rotatedSolved of solvedPatterns) {
           if (currentPattern.isIdentical(rotatedSolved)) {
             return true;
           }
@@ -90,7 +139,8 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
         console.error('Solve check error:', e);
         return false;
       }
-    }
+    },
+    applyMove: applyMoveImperative,
   }), [puzzleSize]);
 
   // Initialize cube
@@ -126,6 +176,9 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
       containerRef.current!.appendChild(player);
       playerRef.current = player;
       lastMoveCount.current = 0;
+
+      // Pre-warm the solved patterns cache in the background
+      getSolvedPatterns(puzzleSize);
 
       // Set camera position and enable drag after player is fully ready
       (async () => {
@@ -166,7 +219,11 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
 
     const applyMoves = async () => {
       try {
-        const { Alg } = await import('cubing/alg');
+        // Use cached module if available, otherwise load it
+        if (!algModule) {
+          algModule = await import('cubing/alg');
+        }
+        const { Alg } = algModule;
         const player = playerRef.current;
 
         // Add each move with animation
@@ -194,4 +251,17 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
       style={{ minHeight: '400px' }}
     />
   );
+});
+
+// Memoize to prevent re-renders when moves array reference changes but content is same
+export const TwistyCube = memo(TwistyCubeInner, (prevProps, nextProps) => {
+  // Only re-render if these props actually change
+  if (prevProps.puzzleSize !== nextProps.puzzleSize) return false;
+  if (prevProps.scramble !== nextProps.scramble) return false;
+  if (prevProps.animationSpeed !== nextProps.animationSpeed) return false;
+  if (prevProps.className !== nextProps.className) return false;
+  if (prevProps.isInteractive !== nextProps.isInteractive) return false;
+  // For moves, compare length - the component handles incremental updates internally
+  if (prevProps.moves?.length !== nextProps.moves?.length) return false;
+  return true;
 });

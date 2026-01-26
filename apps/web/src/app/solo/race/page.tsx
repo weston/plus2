@@ -49,7 +49,7 @@ function GhostRaceContent() {
   const [isSolving, setIsSolving] = useState(false);
   const moveSeqRef = useRef(0);
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<number | null>(null);
   const solveStartTimeRef = useRef(0);
   const cubeRef = useRef<TwistyCubeHandle>(null);
   const ghostCubeRef = useRef<TwistyCubeHandle>(null);
@@ -157,7 +157,7 @@ function GhostRaceContent() {
       setWaitingForGhost(false);
       setPlayerFinishedTime(null);
       if (timerRef.current) {
-        clearInterval(timerRef.current);
+        cancelAnimationFrame(timerRef.current);
         timerRef.current = null;
       }
       if (ghostReplayRef.current) {
@@ -194,10 +194,16 @@ function GhostRaceContent() {
         moveSeqRef.current = 0;
         setMoveSeq(0);
 
-        timerRef.current = setInterval(() => {
-          const elapsed = Date.now() - race.solveStartsAt;
-          setSolveTime(elapsed);
-        }, 10);
+        let lastUpdate = 0;
+        const updateTimer = (timestamp: number) => {
+          if (timestamp - lastUpdate >= 16) {
+            const elapsed = Date.now() - race.solveStartsAt;
+            setSolveTime(elapsed);
+            lastUpdate = timestamp;
+          }
+          timerRef.current = requestAnimationFrame(updateTimer);
+        };
+        timerRef.current = requestAnimationFrame(updateTimer);
       }
     }
   }, [race.phase, race.solveStartsAt]);
@@ -211,7 +217,10 @@ function GhostRaceContent() {
     (move: string) => {
       if (race.phase !== 'inspecting' && race.phase !== 'solving') return;
 
-      // Always apply the move locally
+      // Apply move immediately for instant visual feedback
+      cubeRef.current?.applyMove(move);
+
+      // Also update state for tracking
       setMoves((prev) => [...prev, move]);
 
       // Send all moves to server (including rotations)
@@ -229,10 +238,18 @@ function GhostRaceContent() {
       if (!timerRef.current) {
         setIsSolving(true);
         solveStartTimeRef.current = Date.now();
-        timerRef.current = setInterval(() => {
-          const elapsed = Date.now() - solveStartTimeRef.current;
-          setSolveTime(elapsed);
-        }, 10);
+        let lastUpdate = 0;
+
+        const updateTimer = (timestamp: number) => {
+          // Throttle to ~60fps
+          if (timestamp - lastUpdate >= 16) {
+            const elapsed = Date.now() - solveStartTimeRef.current;
+            setSolveTime(elapsed);
+            lastUpdate = timestamp;
+          }
+          timerRef.current = requestAnimationFrame(updateTimer);
+        };
+        timerRef.current = requestAnimationFrame(updateTimer);
       }
     },
     [race.phase, race.sendMove]
@@ -242,7 +259,7 @@ function GhostRaceContent() {
   const handleStopTimer = useCallback(async () => {
     if (!timerRef.current) return;
 
-    clearInterval(timerRef.current);
+    cancelAnimationFrame(timerRef.current);
     timerRef.current = null;
 
     // Record player's finish time

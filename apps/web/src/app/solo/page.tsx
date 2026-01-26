@@ -38,7 +38,7 @@ export default function SoloPage() {
   // Track moves with timestamps for batch submission
   const recordedMovesRef = useRef<Array<{ seq: number; move: string; tMs: number }>>([]);
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<number | null>(null);
   const solveStartTimeRef = useRef(0);
   const cubeRef = useRef<TwistyCubeHandle>(null);
   const isSolvedRef = useRef(false);
@@ -62,7 +62,7 @@ export default function SoloPage() {
       isSolvedRef.current = false;
       recordedMovesRef.current = []; // Clear recorded moves for new round
       if (timerRef.current) {
-        clearInterval(timerRef.current);
+        cancelAnimationFrame(timerRef.current);
         timerRef.current = null;
       }
 
@@ -93,10 +93,16 @@ export default function SoloPage() {
         moveSeqRef.current = 0;
         setMoveSeq(0);
 
-        timerRef.current = setInterval(() => {
-          const elapsed = Date.now() - solo.solveStartsAt;
-          setSolveTime(elapsed);
-        }, 10);
+        let lastUpdate = 0;
+        const updateTimer = (timestamp: number) => {
+          if (timestamp - lastUpdate >= 16) {
+            const elapsed = Date.now() - solo.solveStartsAt;
+            setSolveTime(elapsed);
+            lastUpdate = timestamp;
+          }
+          timerRef.current = requestAnimationFrame(updateTimer);
+        };
+        timerRef.current = requestAnimationFrame(updateTimer);
       }
     }
   }, [solo.phase, solo.solveStartsAt]);
@@ -110,7 +116,10 @@ export default function SoloPage() {
     (move: string) => {
       if (solo.phase !== 'inspecting' && solo.phase !== 'solving') return;
 
-      // Always apply the move locally for visual display
+      // Apply move immediately for instant visual feedback
+      cubeRef.current?.applyMove(move);
+
+      // Also update state for tracking
       setMoves((prev) => [...prev, move]);
 
       // Track move with timestamp relative to inspection start (for ghost replay)
@@ -133,11 +142,18 @@ export default function SoloPage() {
       if (!timerRef.current) {
         setIsSolving(true); // Mark that user started solving
         solveStartTimeRef.current = Date.now();
+        let lastUpdate = 0;
 
-        timerRef.current = setInterval(() => {
-          const elapsed = Date.now() - solveStartTimeRef.current;
-          setSolveTime(elapsed);
-        }, 10);
+        const updateTimer = (timestamp: number) => {
+          // Throttle to ~60fps
+          if (timestamp - lastUpdate >= 16) {
+            const elapsed = Date.now() - solveStartTimeRef.current;
+            setSolveTime(elapsed);
+            lastUpdate = timestamp;
+          }
+          timerRef.current = requestAnimationFrame(updateTimer);
+        };
+        timerRef.current = requestAnimationFrame(updateTimer);
       }
     },
     [solo.phase, solo.inspectionStartsAt]
@@ -148,7 +164,7 @@ export default function SoloPage() {
     // Allow stopping if timer is running (either during inspection with early start, or solving phase)
     if (!timerRef.current) return;
 
-    clearInterval(timerRef.current);
+    cancelAnimationFrame(timerRef.current);
     timerRef.current = null;
 
     // Calculate final time

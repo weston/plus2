@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 interface TimerProps {
   startTime: number | null;
@@ -18,6 +18,8 @@ export function Timer({
   inspectionDuration = 15000,
 }: TimerProps) {
   const [displayTime, setDisplayTime] = useState(0);
+  const rafRef = useRef<number | null>(null);
+  const lastUpdateRef = useRef<number>(0);
 
   useEffect(() => {
     if (finalTime !== undefined && finalTime !== null) {
@@ -34,16 +36,27 @@ export function Timer({
       return;
     }
 
-    const interval = setInterval(() => {
-      if (isInspection) {
-        const remaining = Math.max(0, inspectionDuration - (Date.now() - startTime));
-        setDisplayTime(remaining);
-      } else {
-        setDisplayTime(Date.now() - startTime);
+    const updateTimer = (timestamp: number) => {
+      // Throttle updates to ~60fps (every 16ms) to reduce re-renders
+      if (timestamp - lastUpdateRef.current >= 16) {
+        if (isInspection) {
+          const remaining = Math.max(0, inspectionDuration - (Date.now() - startTime));
+          setDisplayTime(remaining);
+        } else {
+          setDisplayTime(Date.now() - startTime);
+        }
+        lastUpdateRef.current = timestamp;
       }
-    }, 10);
+      rafRef.current = requestAnimationFrame(updateTimer);
+    };
 
-    return () => clearInterval(interval);
+    rafRef.current = requestAnimationFrame(updateTimer);
+
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
   }, [startTime, isRunning, finalTime, isInspection, inspectionDuration]);
 
   const formatTime = (ms: number) => {
