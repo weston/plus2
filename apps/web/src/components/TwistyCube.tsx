@@ -93,18 +93,12 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
     }
   }), [puzzleSize]);
 
-  // Track moves prop for applying after initialization
-  const movesRef = useRef<string[]>([]);
-  useEffect(() => {
-    movesRef.current = moves;
-  }, [moves]);
-
   // Initialize cube
   useEffect(() => {
     if (!containerRef.current) return;
 
     // Dynamic import of cubing.js
-    import('cubing/twisty').then(async ({ TwistyPlayer }) => {
+    import('cubing/twisty').then(({ TwistyPlayer }) => {
       // Clear previous player
       if (playerRef.current) {
         playerRef.current.remove();
@@ -132,18 +126,6 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
       containerRef.current!.appendChild(player);
       playerRef.current = player;
       lastMoveCount.current = 0;
-
-      // Apply any pending moves that were added while the player was initializing
-      if (movesRef.current.length > 0) {
-        try {
-          for (const moveStr of movesRef.current) {
-            player.experimentalAddMove(moveStr);
-          }
-          lastMoveCount.current = movesRef.current.length;
-        } catch (e) {
-          console.error('Failed to apply pending moves:', e);
-        }
-      }
 
       // Set camera position and enable drag after player is fully ready
       (async () => {
@@ -182,17 +164,27 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
     const newMoves = moves.slice(lastMoveCount.current);
     if (newMoves.length === 0) return;
 
-    try {
-      const player = playerRef.current;
+    const applyMoves = async () => {
+      try {
+        const { Alg } = await import('cubing/alg');
+        const player = playerRef.current;
 
-      // Add each move with animation
-      for (const moveStr of newMoves) {
-        player.experimentalAddMove(moveStr);
+        // Add each move with animation
+        for (const moveStr of newMoves) {
+          const alg = new Alg(moveStr);
+          // Get the first unit from the alg (it's an iterable)
+          for (const move of alg.units()) {
+            player.experimentalAddMove(move);
+            break; // Only take the first move
+          }
+        }
+        lastMoveCount.current = moves.length;
+      } catch (e) {
+        console.error('Failed to apply moves:', e);
       }
-      lastMoveCount.current = moves.length;
-    } catch (e) {
-      console.error('Failed to apply moves:', e);
-    }
+    };
+
+    applyMoves();
   }, [moves]);
 
   return (

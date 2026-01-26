@@ -197,6 +197,7 @@ export interface MoveRecord {
   move: string;
   clientTs: number;
   serverTs?: number;
+  tMs?: number; // Relative timestamp from solve start (for batch-submitted moves)
 }
 
 // =============================================================================

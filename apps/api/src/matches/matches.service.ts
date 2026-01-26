@@ -126,32 +126,45 @@ export class MatchesService {
     move: MoveRecord,
   ): Promise<void> {
     const match = await this.getMatch(matchId);
-    const solve = await this.solveRepository.findOne({
-      where: { matchId, roundNumber },
-    });
-
-    if (!solve) return;
-
     const isPlayer1 = match.player1Id === userId;
+    const moveJson = JSON.stringify([move]);
 
-    // If this is the first move, start the solve timer
+    // Use atomic update to prevent race condition when moves arrive quickly
+    // Each player's moves are in separate columns, so they don't conflict with each other
+    // But rapid moves from the same player could still race without atomic update
     if (isPlayer1) {
-      if (solve.p1Status === 'inspecting') {
-        solve.p1Status = 'solving';
-        solve.p1SolveStartAt = new Date();
-      }
-      solve.p1Moves.push(move);
-      solve.p1MoveCount = solve.p1Moves.length;
+      await this.solveRepository
+        .createQueryBuilder()
+        .update()
+        .set({
+          p1Moves: () => `p1_moves || :moveJson::jsonb`,
+          p1MoveCount: () => 'p1_move_count + 1',
+          p1Status: 'solving',
+          p1SolveStartAt: () => 'COALESCE(p1_solve_start_at, NOW())',
+        })
+        .where('match_id = :matchId AND round_number = :roundNumber', {
+          matchId,
+          roundNumber,
+        })
+        .setParameter('moveJson', moveJson)
+        .execute();
     } else {
-      if (solve.p2Status === 'inspecting') {
-        solve.p2Status = 'solving';
-        solve.p2SolveStartAt = new Date();
-      }
-      solve.p2Moves.push(move);
-      solve.p2MoveCount = solve.p2Moves.length;
+      await this.solveRepository
+        .createQueryBuilder()
+        .update()
+        .set({
+          p2Moves: () => `p2_moves || :moveJson::jsonb`,
+          p2MoveCount: () => 'p2_move_count + 1',
+          p2Status: 'solving',
+          p2SolveStartAt: () => 'COALESCE(p2_solve_start_at, NOW())',
+        })
+        .where('match_id = :matchId AND round_number = :roundNumber', {
+          matchId,
+          roundNumber,
+        })
+        .setParameter('moveJson', moveJson)
+        .execute();
     }
-
-    await this.solveRepository.save(solve);
   }
 
   async recordSolveComplete(

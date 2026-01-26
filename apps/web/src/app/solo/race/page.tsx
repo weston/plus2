@@ -57,6 +57,8 @@ function GhostRaceContent() {
   // Ghost replay state
   const [ghostMoves, setGhostMoves] = useState<string[]>([]);
   const ghostReplayRef = useRef<NodeJS.Timeout | null>(null);
+  const [waitingForGhost, setWaitingForGhost] = useState(false);
+  const [playerFinishedTime, setPlayerFinishedTime] = useState<number | null>(null);
 
   // Redirect if not logged in
   useEffect(() => {
@@ -67,24 +69,35 @@ function GhostRaceContent() {
 
   // Start replaying ghost moves from inspection start
   const startGhostReplay = useCallback(() => {
-    if (!race.ghostMoves || race.ghostMoves.length === 0) return;
+    if (!race.ghostMoves || race.ghostMoves.length === 0) {
+      setWaitingForGhost(false);
+      return;
+    }
     if (ghostReplayRef.current) return; // Already running
 
     let moveIndex = 0;
-    const ghostBaseTime = race.ghostInspectionStartAt;
+    const ghostInspectionStart = race.ghostInspectionStartAt;
 
     ghostReplayRef.current = setInterval(() => {
       // Calculate elapsed time since our inspection started
       const elapsed = Date.now() - race.inspectionStartsAt;
 
       // Apply all ghost moves that should have happened by now
-      // Move timing is relative to ghost's original inspection start
       while (moveIndex < race.ghostMoves.length) {
         const move = race.ghostMoves[moveIndex];
-        // Calculate when this move happened relative to ghost's inspection start
-        const moveTime = move.serverTs && ghostBaseTime
-          ? move.serverTs - ghostBaseTime
-          : moveIndex * 200; // Fallback if no timing data
+
+        // Calculate when this move should play relative to inspection start
+        let moveTime: number;
+        if (move.tMs !== undefined) {
+          // tMs is now relative to inspection start - use directly
+          moveTime = move.tMs;
+        } else if (move.serverTs && ghostInspectionStart) {
+          // Legacy: use serverTs relative to ghost's inspection start
+          moveTime = move.serverTs - ghostInspectionStart;
+        } else {
+          // Fallback: spread moves evenly starting at 15s
+          moveTime = 15000 + (moveIndex * 200);
+        }
 
         if (elapsed >= moveTime) {
           setGhostMoves((prev) => [...prev, move.move]);
@@ -100,6 +113,8 @@ function GhostRaceContent() {
           clearInterval(ghostReplayRef.current);
           ghostReplayRef.current = null;
         }
+        // Ghost has finished - no longer waiting
+        setWaitingForGhost(false);
       }
     }, 50);
   }, [race.ghostMoves, race.ghostInspectionStartAt, race.inspectionStartsAt]);
@@ -114,6 +129,8 @@ function GhostRaceContent() {
       setMoveSeq(0);
       setSolveTime(0);
       setIsSolving(false);
+      setWaitingForGhost(false);
+      setPlayerFinishedTime(null);
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -203,10 +220,13 @@ function GhostRaceContent() {
     clearInterval(timerRef.current);
     timerRef.current = null;
 
-    // Stop ghost replay
+    // Record player's finish time
+    const finishTime = Date.now() - solveStartTimeRef.current;
+    setPlayerFinishedTime(finishTime);
+
+    // If ghost replay is still running, wait for it to finish
     if (ghostReplayRef.current) {
-      clearInterval(ghostReplayRef.current);
-      ghostReplayRef.current = null;
+      setWaitingForGhost(true);
     }
 
     // Check if cube is solved
@@ -437,7 +457,7 @@ function GhostRaceContent() {
               </div>
             </>
           )}
-          {(race.phase === 'solving' || isSolving) && race.phase !== 'round_complete' && (
+          {(race.phase === 'solving' || isSolving) && race.phase !== 'round_complete' && !playerFinishedTime && (
             <>
               <div className="text-sm text-gray-400 mb-2">Solve</div>
               <div className="text-6xl font-mono font-bold">
@@ -446,7 +466,29 @@ function GhostRaceContent() {
               <div className="text-sm text-gray-500 mt-2">Press SPACE when solved</div>
             </>
           )}
-          {race.phase === 'round_complete' && (
+          {/* Player finished but waiting for ghost to complete */}
+          {waitingForGhost && playerFinishedTime && (
+            <>
+              <div className="text-sm text-green-400 mb-2">You finished!</div>
+              <div className="text-4xl font-mono font-bold text-green-500">
+                {formatTime(playerFinishedTime)}
+              </div>
+              <div className="text-sm text-gray-400 mt-2">Watching ghost finish...</div>
+              <button
+                onClick={() => {
+                  if (ghostReplayRef.current) {
+                    clearInterval(ghostReplayRef.current);
+                    ghostReplayRef.current = null;
+                  }
+                  setWaitingForGhost(false);
+                }}
+                className="btn btn-secondary px-4 py-1 mt-3 text-sm"
+              >
+                Skip
+              </button>
+            </>
+          )}
+          {race.phase === 'round_complete' && !waitingForGhost && (
             <>
               <div className="text-sm text-gray-400 mb-2">
                 {race.lastUserWonRound ? 'You won this round!' : 'Ghost won this round'}
@@ -482,7 +524,7 @@ function GhostRaceContent() {
         </div>
 
         {/* Scramble */}
-        {race.scramble && (race.phase === 'inspecting' || race.phase === 'solving') && (
+        {race.scramble && (race.phase === 'inspecting' || race.phase === 'solving' || waitingForGhost) && (
           <div className="card mb-6">
             <p className="scramble-text text-lg text-center">{race.scramble}</p>
           </div>

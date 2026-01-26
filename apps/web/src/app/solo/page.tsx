@@ -35,6 +35,8 @@ export default function SoloPage() {
   const [moves, setMoves] = useState<string[]>([]);
   const [isSolving, setIsSolving] = useState(false); // Local state: user started solving
   const moveSeqRef = useRef(0);
+  // Track moves with timestamps for batch submission
+  const recordedMovesRef = useRef<Array<{ seq: number; move: string; tMs: number }>>([]);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const solveStartTimeRef = useRef(0);
@@ -58,6 +60,7 @@ export default function SoloPage() {
       setSolveTime(0);
       setIsSolving(false);
       isSolvedRef.current = false;
+      recordedMovesRef.current = []; // Clear recorded moves for new round
       if (timerRef.current) {
         clearInterval(timerRef.current);
         timerRef.current = null;
@@ -107,14 +110,19 @@ export default function SoloPage() {
     (move: string) => {
       if (solo.phase !== 'inspecting' && solo.phase !== 'solving') return;
 
-      // Always apply the move locally
+      // Always apply the move locally for visual display
       setMoves((prev) => [...prev, move]);
 
-      // Send all moves to server (including rotations for replay)
+      // Track move with timestamp relative to inspection start (for ghost replay)
       moveSeqRef.current += 1;
       const seq = moveSeqRef.current;
       setMoveSeq(seq);
-      solo.sendMove(seq, move);
+
+      // Calculate timestamp relative to inspection start (not solve start)
+      // This allows ghost replay to show inspection rotations at the right time
+      const tMs = Date.now() - solo.inspectionStartsAt;
+
+      recordedMovesRef.current.push({ seq, move, tMs });
 
       // Only non-rotation moves start the timer
       if (isRotation(move)) {
@@ -125,13 +133,14 @@ export default function SoloPage() {
       if (!timerRef.current) {
         setIsSolving(true); // Mark that user started solving
         solveStartTimeRef.current = Date.now();
+
         timerRef.current = setInterval(() => {
           const elapsed = Date.now() - solveStartTimeRef.current;
           setSolveTime(elapsed);
         }, 10);
       }
     },
-    [solo.phase, solo.sendMove]
+    [solo.phase, solo.inspectionStartsAt]
   );
 
   // Stop timer and check if solved (called on spacebar)
@@ -142,15 +151,15 @@ export default function SoloPage() {
     clearInterval(timerRef.current);
     timerRef.current = null;
 
+    // Calculate final time
+    const finalTimeMs = Date.now() - solveStartTimeRef.current;
+
     // Check if cube is solved
     const isSolved = await cubeRef.current?.checkSolved() ?? false;
 
-    if (isSolved) {
-      solo.sendComplete();
-    } else {
-      // Send DNF - for now still complete, server records the time
-      solo.sendComplete();
-    }
+    // Send all recorded moves with the completion event
+    // Include the client-calculated time since server doesn't track solve start anymore
+    solo.sendComplete(recordedMovesRef.current, !isSolved, finalTimeMs);
   }, [solo.sendComplete]);
 
   // Spacebar handler for stopping timer

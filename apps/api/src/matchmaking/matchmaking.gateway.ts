@@ -104,8 +104,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       ghostSolves: Array<{
         scramble: string;
         timeMs: number | null;
-        moves: Array<{ move: string; serverTs?: number }>;
+        moves: Array<{ move: string; serverTs?: number; tMs?: number }>;
         inspectionStartAt: number;
+        solveStartAt: number;
       }>;
       inspectionTimer?: NodeJS.Timeout;
       solveTimeout?: NodeJS.Timeout;
@@ -703,7 +704,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   }
 
   @SubscribeMessage('solo_complete')
-  async handleSoloComplete(@ConnectedSocket() socket: AuthenticatedSocket) {
+  async handleSoloComplete(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data?: { moves?: Array<{ seq: number; move: string; tMs: number }>; isDnf?: boolean; timeMs?: number },
+  ) {
     if (!socket.soloSessionId || !socket.userId || !this.soloService) return;
 
     const session = this.activeSoloSessions.get(socket.soloSessionId);
@@ -715,9 +719,24 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       session.solveTimeout = undefined;
     }
 
+    // Sort moves by timestamp to ensure correct order
+    // Store tMs (relative timestamp) for replay timing
+    const moves = data?.moves
+      ? [...data.moves].sort((a, b) => a.tMs - b.tMs).map(m => ({
+          seq: m.seq,
+          move: m.move,
+          clientTs: session.solveStartedAt ? session.solveStartedAt + m.tMs : m.tMs,
+          serverTs: Date.now(),
+          tMs: m.tMs, // Keep relative timestamp for ghost replay
+        }))
+      : [];
+
     const result = await this.soloService.recordSolveComplete(
       socket.soloSessionId,
       session.currentRound,
+      data?.isDnf ?? false,
+      moves,
+      data?.timeMs, // Pass client-calculated time
     );
 
     if (!result) return;
@@ -805,11 +824,12 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     session.solveTimeout = undefined;
 
-    // Record DNF for timeout
+    // Record DNF for timeout (no moves to record)
     const result = await this.soloService.recordSolveComplete(
       sessionId,
       session.currentRound,
       true, // isDnf
+      [], // No moves for DNF timeout
     );
     if (!result) return;
 
@@ -909,7 +929,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       const raceId = `race_${Date.now()}_${socket.userId}`;
       socket.ghostRaceId = raceId;
 
-      // Prepare ghost solve data with inspection timing
+      // Prepare ghost solve data with inspection and solve timing
       const ghostSolves = ghostSession.solves
         ?.sort((a, b) => a.roundNumber - b.roundNumber)
         .map(s => ({
@@ -917,6 +937,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
           timeMs: s.timeMs,
           moves: s.moves || [],
           inspectionStartAt: s.inspectionStartAt?.getTime() || 0,
+          solveStartAt: s.solveStartAt?.getTime() || 0,
         })) || [];
 
       this.activeGhostRaces.set(raceId, {
@@ -1134,6 +1155,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       ghostMoves: ghostSolve.moves, // Send ghost moves for replay
       ghostTime: ghostSolve.timeMs,
       ghostInspectionStartAt: ghostSolve.inspectionStartAt, // Original inspection start for timing
+      ghostSolveStartAt: ghostSolve.solveStartAt, // When ghost started solving
     });
 
     // Set inspection end timer

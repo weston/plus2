@@ -125,28 +125,33 @@ export class SoloService {
     roundNumber: number,
     move: MoveRecord,
   ): Promise<void> {
-    const solve = await this.solveRepository.findOne({
-      where: { sessionId, roundNumber },
-    });
+    // Use atomic update to prevent race condition when multiple moves arrive quickly
+    // This appends to the JSON array and increments move_count atomically
+    const moveJson = JSON.stringify([move]);
 
-    if (!solve) return;
-
-    // If first move during inspection, start solving
-    if (solve.status === 'inspecting') {
-      solve.status = 'solving';
-      solve.solveStartAt = new Date();
-    }
-
-    solve.moves.push(move);
-    solve.moveCount = solve.moves.length;
-
-    await this.solveRepository.save(solve);
+    await this.solveRepository
+      .createQueryBuilder()
+      .update()
+      .set({
+        moves: () => `moves || :moveJson::jsonb`,
+        moveCount: () => 'move_count + 1',
+        status: 'solving',
+        solveStartAt: () => 'COALESCE(solve_start_at, NOW())',
+      })
+      .where('session_id = :sessionId AND round_number = :roundNumber', {
+        sessionId,
+        roundNumber,
+      })
+      .setParameter('moveJson', moveJson)
+      .execute();
   }
 
   async recordSolveComplete(
     sessionId: string,
     roundNumber: number,
     isDnf: boolean = false,
+    moves?: MoveRecord[],
+    clientTimeMs?: number,
   ): Promise<{
     timeMs: number | null;
     roundNumber: number;
@@ -167,9 +172,21 @@ export class SoloService {
     } else {
       solve.status = 'completed';
       solve.solveEndAt = now;
-      solve.timeMs = solve.solveStartAt
+      // Use client-provided time if available (more accurate since client tracks solve start)
+      // Fall back to server calculation if not provided
+      solve.timeMs = clientTimeMs ?? (solve.solveStartAt
         ? now.getTime() - solve.solveStartAt.getTime()
-        : 0;
+        : 0);
+    }
+
+    // Store moves if provided (batch submission)
+    if (moves && moves.length > 0) {
+      solve.moves = moves;
+      solve.moveCount = moves.length;
+      // Set solveStartAt based on client time if not already set
+      if (!solve.solveStartAt && clientTimeMs) {
+        solve.solveStartAt = new Date(now.getTime() - clientTimeMs);
+      }
     }
 
     await this.solveRepository.save(solve);

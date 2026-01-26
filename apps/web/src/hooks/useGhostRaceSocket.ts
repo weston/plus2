@@ -31,6 +31,7 @@ export interface GhostRaceState {
   ghostMoves: MoveRecord[];
   ghostTime: number | null;
   ghostInspectionStartAt: number; // Original inspection start timestamp for timing
+  ghostSolveStartAt: number; // When ghost started solving (for calculating move timing)
   // Extended ghost info
   ghostCountry: string | null;
   ghostGamesPlayed: number;
@@ -64,6 +65,7 @@ const initialState: GhostRaceState = {
   ghostMoves: [],
   ghostTime: null,
   ghostInspectionStartAt: 0,
+  ghostSolveStartAt: 0,
   // Extended ghost info
   ghostCountry: null,
   ghostGamesPlayed: 0,
@@ -143,6 +145,7 @@ export function useGhostRaceSocket() {
       ghostMoves: MoveRecord[];
       ghostTime: number | null;
       ghostInspectionStartAt: number;
+      ghostSolveStartAt: number;
     }) => {
       // Use local client time for timer display (server calculates final time)
       setState((prev) => ({
@@ -156,6 +159,7 @@ export function useGhostRaceSocket() {
         ghostMoves: data.ghostMoves || [],
         ghostTime: data.ghostTime,
         ghostInspectionStartAt: data.ghostInspectionStartAt || 0,
+        ghostSolveStartAt: data.ghostSolveStartAt || 0,
         lastUserTime: null,
         lastGhostTime: null,
         lastUserWonRound: null,

@@ -162,19 +162,13 @@ export function useSoloSocket() {
     }
   }, []);
 
-  const sendMove = useCallback((seq: number, move: string) => {
+  // Moves are now collected locally and sent with complete
+  // This avoids race conditions and reduces network traffic
+  const sendComplete = useCallback((moves: Array<{ seq: number; move: string; tMs: number }>, isDnf: boolean = false, timeMs?: number) => {
     if (socketRef.current) {
-      socketRef.current.emit('solo_move', {
-        seq,
-        move,
-        clientTs: Date.now(),
-      });
-    }
-  }, []);
-
-  const sendComplete = useCallback(() => {
-    if (socketRef.current) {
-      socketRef.current.emit('solo_complete', {});
+      // Sort by timestamp to ensure correct order, then send all at once
+      const sortedMoves = [...moves].sort((a, b) => a.tMs - b.tMs);
+      socketRef.current.emit('solo_complete', { moves: sortedMoves, isDnf, timeMs });
     }
   }, []);
 
@@ -192,7 +186,6 @@ export function useSoloSocket() {
   return {
     ...state,
     startSolo,
-    sendMove,
     sendComplete,
     abandonSolo,
     reset,
