@@ -119,6 +119,31 @@ function GhostRaceContent() {
     }, 50);
   }, [race.ghostMoves, race.ghostInspectionStartAt, race.inspectionStartsAt]);
 
+  // Auto-advance to next round after ghost finishes and results are shown
+  const nextRoundTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    // When round is complete and we're not waiting for ghost, start auto-advance timer
+    if (race.phase === 'round_complete' && !waitingForGhost && race.currentRound < race.totalRounds) {
+      // Clear any existing timer
+      if (nextRoundTimerRef.current) {
+        clearTimeout(nextRoundTimerRef.current);
+      }
+      // Auto-advance after 3 seconds
+      nextRoundTimerRef.current = setTimeout(() => {
+        race.skipToNextRound();
+        nextRoundTimerRef.current = null;
+      }, 3000);
+    }
+
+    return () => {
+      if (nextRoundTimerRef.current) {
+        clearTimeout(nextRoundTimerRef.current);
+        nextRoundTimerRef.current = null;
+      }
+    };
+  }, [race.phase, waitingForGhost, race.currentRound, race.totalRounds, race.skipToNextRound]);
+
   // Handle inspection countdown and reset state for new round
   useEffect(() => {
     if (race.phase === 'inspecting' && race.inspectionStartsAt > 0) {

@@ -1032,11 +1032,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     if (race.currentRound >= race.totalRounds) {
       await this.finishGhostRace(socket.ghostRaceId);
-    } else {
-      // Start next round after delay (can be skipped by user)
-      const raceId = socket.ghostRaceId;
-      race.nextRoundTimer = setTimeout(() => this.startGhostRaceRound(raceId), 3000);
     }
+    // Don't auto-start next round - wait for client to request it
+    // (after ghost replay finishes or user skips)
   }
 
   @SubscribeMessage('ghost_race_skip')
@@ -1046,14 +1044,15 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const race = this.activeGhostRaces.get(socket.ghostRaceId);
     if (!race) return;
 
-    // Clear the next round timer and start immediately
+    // Clear any pending timer
     if (race.nextRoundTimer) {
       clearTimeout(race.nextRoundTimer);
       race.nextRoundTimer = undefined;
+    }
 
-      if (race.currentRound < race.totalRounds) {
-        this.startGhostRaceRound(socket.ghostRaceId);
-      }
+    // Start next round if not finished
+    if (race.currentRound < race.totalRounds) {
+      this.startGhostRaceRound(socket.ghostRaceId);
     }
   }
 
