@@ -394,6 +394,7 @@ export default function PracticePage() {
                     puzzleSize={puzzleSize}
                     scramble={appliedScramble}
                     moves={moves}
+                    onSolved={stopTimer}
                     animationSpeed={animationSpeed}
                     className="h-80 md:h-[500px]"
                   />
@@ -420,6 +421,28 @@ export default function PracticePage() {
                   </button>
                   <button onClick={deleteLast} className="btn btn-secondary">
                     Delete
+                  </button>
+                  <button
+                    onClick={() => {
+                      try {
+                        localStorage.setItem(
+                          'plus2-review',
+                          JSON.stringify({
+                            puzzleSize,
+                            scramble: appliedScramble,
+                            moves,
+                            timeMs: solveTime,
+                            title: 'Practice Solve',
+                          }),
+                        );
+                        window.open('/review', '_blank');
+                      } catch {
+                        /* ignore */
+                      }
+                    }}
+                    className="btn btn-secondary"
+                  >
+                    Review
                   </button>
                 </div>
               </div>

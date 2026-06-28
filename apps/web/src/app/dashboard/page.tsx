@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
@@ -8,6 +8,7 @@ import { useGameStore } from '@/stores/game';
 import { useSocket } from '@/hooks/useSocket';
 import { LeagueBadge } from '@/components/LeagueBadge';
 import { usersApi, matchesApi, GhostRace } from '@/lib/api';
+import { RANKED_HUMAN_WAIT_MS } from '@plus2/shared';
 import type { PuzzleSize, LeagueTier } from '@plus2/shared';
 
 const PUZZLE_SIZES: PuzzleSize[] = ['2x2', '3x3', '4x4', '5x5'];
@@ -57,20 +58,45 @@ export default function DashboardPage() {
     });
   }, [accessToken]);
 
-  // Redirect to match when found
+  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearFallback = () => {
+    if (fallbackTimerRef.current) {
+      clearTimeout(fallbackTimerRef.current);
+      fallbackTimerRef.current = null;
+    }
+  };
+
+  // Redirect to the live match when a human is found.
   useEffect(() => {
     if (phase === 'matched') {
+      clearFallback();
       router.push('/match');
     }
   }, [phase, router]);
 
-  const handleQueue = () => {
+  // Clear the fallback timer on unmount.
+  useEffect(() => () => clearFallback(), []);
+
+  // One "Find Race": look for a live human, then fall back to a ghost so there's
+  // always an opponent.
+  const handleFindRace = () => {
     if (phase === 'queuing') {
+      clearFallback();
       leaveQueue();
-    } else {
-      setPuzzleSize(selectedSize);
-      joinQueue(selectedSize);
+      return;
     }
+    setPuzzleSize(selectedSize);
+    joinQueue(selectedSize);
+    clearFallback();
+    fallbackTimerRef.current = setTimeout(() => {
+      // No human in time → race a ghost. The ghost page seed-falls-back, so this
+      // always lands an opponent.
+      if (useGameStore.getState().phase === 'queuing') {
+        leaveQueue();
+        router.push(`/solo/race?auto=1&size=${selectedSize}`);
+      }
+    }, RANKED_HUMAN_WAIT_MS);
   };
 
   const handleLogout = () => {
@@ -161,7 +187,7 @@ export default function DashboardPage() {
 
             <div className="flex gap-3">
               <button
-                onClick={handleQueue}
+                onClick={handleFindRace}
                 className={`flex-1 py-4 rounded-lg font-bold text-lg transition-all ${
                   phase === 'queuing'
                     ? 'bg-red-600 hover:bg-red-700'
@@ -171,10 +197,10 @@ export default function DashboardPage() {
                 {phase === 'queuing' ? (
                   <span className="flex items-center justify-center gap-2">
                     <span className="animate-spin">&#9696;</span>
-                    Cancel ({estimatedWait}s)
+                    Finding opponent... (Cancel)
                   </span>
                 ) : (
-                  'Find Live Match'
+                  'Find Race'
                 )}
               </button>
 

@@ -129,6 +129,7 @@ export const authApi = {
 export interface UserPreferences {
   animationSpeed?: number;
   cubeColors?: Record<string, string>;
+  ghostOptOut?: boolean;
 }
 
 // User profile type

@@ -14,6 +14,7 @@ interface TwistyCubeProps {
   moves?: string[];
   isInteractive?: boolean;
   onMove?: (move: string) => void;
+  onSolved?: () => void; // fired when a move leaves the cube solved (auto-stop timer)
   animationSpeed?: number; // higher = faster
   className?: string;
 }
@@ -97,13 +98,15 @@ function speedToVrc(speed: number): number {
 }
 
 export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function TwistyCube(
-  { puzzleSize, scramble = '', moves = [], animationSpeed = 3, className = '' },
+  { puzzleSize, scramble = '', moves = [], onSolved, animationSpeed = 3, className = '' },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cubeRef = useRef<CstimerCube | null>(null);
   const appliedRef = useRef(0);
   const speedRef = useRef(animationSpeed);
+  const onSolvedRef = useRef(onSolved);
+  onSolvedRef.current = onSolved;
 
   const N = SIZE_MAP[puzzleSize] ?? 3;
   const movesSig = moves.join(' ');
@@ -128,6 +131,7 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
           speed: speedToVrc(speedRef.current),
           ori: ORI,
           fit: FIT,
+          onSolved: () => onSolvedRef.current?.(),
         });
         // Center the square canvas within the container.
         cube.dom.style.display = 'flex';

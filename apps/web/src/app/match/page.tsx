@@ -198,31 +198,33 @@ export default function MatchPage() {
     [phase, addMyMove, sendMove, myTimerStart, setPhase, setMySolveStart]
   );
 
-  // Handle spacebar for solve completion
+  // Complete the current solve (shared by spacebar and cube auto-detect).
+  const completeSolve = useCallback(async () => {
+    if (phase !== 'solving' || !myTimerRunning || isSolved) return;
+    const solveTime = myTimerStart ? Date.now() - myTimerStart : 0;
+
+    // Check if cube is actually solved
+    const cubeSolved = (await cubeRef.current?.checkSolved()) ?? false;
+
+    setIsSolved(cubeSolved);
+    setMyTimerRunning(false);
+
+    // Don't set myTime locally - wait for server to send it back so both
+    // players see the exact same value.
+    sendSolveComplete(cubeSolved ? solveTime : null);
+  }, [phase, myTimerRunning, isSolved, myTimerStart, sendSolveComplete]);
+
+  // Spacebar also completes the solve.
   useEffect(() => {
-    const handleKeyDown = async (e: KeyboardEvent) => {
-      if (e.code === 'Space' && phase === 'solving' && myTimerRunning && !isSolved) {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
         e.preventDefault();
-        const solveTime = myTimerStart ? Date.now() - myTimerStart : 0;
-
-        // Check if cube is actually solved
-        const cubeSolved = await cubeRef.current?.checkSolved() ?? false;
-
-        setIsSolved(cubeSolved);
-        setMyTimerRunning(false);
-
-        // Log final time for debugging sync
-        console.log(`[SYNC] My solve complete: solveId=${solveId}, solverFinalMs=${solveTime}`);
-
-        // Don't set myTime locally - wait for server to send it back
-        // This ensures both players see the exact same value
-        sendSolveComplete(cubeSolved ? solveTime : null);
+        void completeSolve();
       }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [phase, myTimerRunning, isSolved, myTimerStart, sendSolveComplete, solveId]);
+  }, [completeSolve]);
 
   // Use keybindings
   useKeybindings({
@@ -285,6 +287,7 @@ export default function MatchPage() {
               puzzleSize={puzzleSize}
               scramble={scramble}
               moves={myMoves}
+              onSolved={completeSolve}
               isInteractive
               className="h-64 mb-4"
             />

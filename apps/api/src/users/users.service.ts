@@ -235,7 +235,7 @@ export class UsersService {
 
   async updatePreferences(
     userId: string,
-    preferences: { animationSpeed?: number; cubeColors?: Record<string, string> },
+    preferences: { animationSpeed?: number; cubeColors?: Record<string, string>; ghostOptOut?: boolean },
   ) {
     const user = await this.findById(userId);
     const merged = { ...user.preferences, ...preferences };

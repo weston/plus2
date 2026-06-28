@@ -14,7 +14,7 @@ import { forwardRef, Inject, Optional } from '@nestjs/common';
 import { MatchmakingService, QueueEntry, Challenge } from './matchmaking.service';
 import { MatchesService } from '../matches/matches.service';
 import { SoloService } from '../solo/solo.service';
-import { PuzzleSize, PUZZLE_SIZES, INSPECTION_DURATION_MS } from '@plus2/shared';
+import { PuzzleSize, PUZZLE_SIZES, INSPECTION_DURATION_MS, RANKED_HUMAN_WAIT_MS } from '@plus2/shared';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -45,6 +45,12 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
   // 10 minute solve timeout
   private readonly SOLVE_TIMEOUT_MS = 10 * 60 * 1000;
+
+  // The ranked ghost fallback is currently orchestrated client-side (the queue
+  // page leaves the queue and starts a ghost race after the human-wait window),
+  // which avoids reconnection edge cases. This server-side fallback is kept,
+  // gated off, for a future fully-server-driven unification.
+  private readonly SERVER_GHOST_FALLBACK = false;
 
   // Map matchId -> match state (stores userIds, not socket refs which can become stale)
   private activeMatches: Map<
@@ -97,6 +103,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       ghostUsername: string;
       ghostMmrAtRecording: number;
       isOldGhost: boolean;
+      isSeed?: boolean; // synthetic seed ghost — don't persist a GhostRace row
       currentRound: number;
       totalRounds: number;
       userTimes: (number | null)[];
@@ -138,10 +145,25 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   }
 
   private async processQueues() {
+    const socketsMap = this.server?.sockets as unknown as Map<string, Socket>;
     for (const size of PUZZLE_SIZES) {
+      // 1. Pair two humans if we can.
       const match = this.matchmakingService.findMatch(size);
       if (match) {
         await this.createMatch(match[0], match[1], size);
+        continue;
+      }
+
+      // 2. Ghost fallback: anyone who's waited past the human window gets a
+      //    ghost (real, else synthetic seed) so there's always an opponent.
+      if (!this.SERVER_GHOST_FALLBACK || !this.soloService) continue;
+      const stale = this.matchmakingService.getStaleEntries(size, RANKED_HUMAN_WAIT_MS);
+      for (const entry of stale) {
+        const socket = socketsMap?.get(entry.socketId) as AuthenticatedSocket | undefined;
+        // Take them out of the queue regardless; skip if the socket is gone/busy.
+        this.matchmakingService.removeFromQueue(entry.userId);
+        if (!socket || socket.matchId || socket.ghostRaceId || socket.soloSessionId) continue;
+        await this.startGhostFallback(socket, entry, size);
       }
     }
   }
@@ -911,9 +933,16 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     try {
       // Find a ghost to race against (from specific user if opponentId provided)
-      const ghostData = data.opponentId
+      let ghostData: any = data.opponentId
         ? await this.soloService.findGhostFromUser(socket.userId, data.opponentId, data.puzzleSize)
         : await this.soloService.findGhostToRace(socket.userId, data.puzzleSize);
+
+      // General ranked ghost requests ALWAYS get an opponent: fall back to a
+      // synthetic seed when no real ghost is available. (A request targeting a
+      // specific player's ghost still errors if they have none.)
+      if (!ghostData && !data.opponentId) {
+        ghostData = await this.soloService.buildSeedGhostForUser(socket.userId, data.puzzleSize);
+      }
 
       if (!ghostData) {
         const message = data.opponentId
@@ -923,54 +952,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         return;
       }
 
-      const { ghostSession, ghostUser, isOldGhost } = ghostData;
-
-      // Create race ID
-      const raceId = `race_${Date.now()}_${socket.userId}`;
-      socket.ghostRaceId = raceId;
-
-      // Prepare ghost solve data with inspection and solve timing
-      const ghostSolves = ghostSession.solves
-        ?.sort((a, b) => a.roundNumber - b.roundNumber)
-        .map(s => ({
-          scramble: s.scramble,
-          timeMs: s.timeMs,
-          moves: s.moves || [],
-          inspectionStartAt: s.inspectionStartAt?.getTime() || 0,
-          solveStartAt: s.solveStartAt?.getTime() || 0,
-        })) || [];
-
-      this.activeGhostRaces.set(raceId, {
-        oderId: socket.userId,
-        puzzleSize: data.puzzleSize,
-        ghostSessionId: ghostSession.id,
-        ghostUserId: ghostUser.id,
-        ghostUsername: ghostUser.username,
-        ghostMmrAtRecording: ghostSession.mmrAtRecording || 1000,
-        isOldGhost,
-        currentRound: 0,
-        totalRounds: ghostSolves.length,
-        userTimes: [],
-        ghostTimes: ghostSolves.map(s => s.timeMs),
-        ghostSolves,
-      });
-
-      socket.emit('ghost_race_started', {
-        raceId,
-        puzzleSize: data.puzzleSize,
-        totalRounds: ghostSolves.length,
-        ghostUsername: ghostUser.username,
-        ghostMmr: ghostSession.mmrAtRecording || 1000,
-        isOldGhost,
-        // Extended ghost info
-        ghostCountry: ghostUser.country,
-        ghostGamesPlayed: ghostUser.gamesPlayed,
-        ghostGamesWon: ghostUser.gamesWon,
-      });
-
-      // Start first round after a short delay
-      setTimeout(() => this.startGhostRaceRound(raceId), 2000);
-
+      this.beginGhostRace(socket, data.puzzleSize, ghostData);
           } catch (error) {
       console.error('Ghost race start error:', error);
       socket.emit('error', { code: 'GHOST_ERROR', message: 'Failed to start ghost race' });
@@ -1089,8 +1071,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       race.isOldGhost,
     );
 
-    // Save the ghost race to database (prevents replaying this ghost)
-    await this.soloService.saveGhostRace({
+    // Save the ghost race to database (prevents replaying this ghost).
+    // Skip synthetic seed ghosts — they have no real session/owner to reference.
+    if (!race.isSeed) await this.soloService.saveGhostRace({
       racerId: race.oderId,
       ghostSessionId: race.ghostSessionId,
       ghostUserId: race.ghostUserId,
@@ -1122,6 +1105,101 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       isOldGhost: race.isOldGhost,
       abandoned: true,
     });
+  }
+
+  // Set up and kick off a ghost race for a socket. Used both by the explicit
+  // ghost_race_start handler and by the ranked matchmaker's ghost fallback.
+  private beginGhostRace(
+    socket: AuthenticatedSocket,
+    puzzleSize: PuzzleSize,
+    ghostData: {
+      ghostSession: {
+        id: string;
+        mmrAtRecording?: number;
+        solves?: Array<{
+          roundNumber: number;
+          scramble: string;
+          timeMs: number | null;
+          moves?: any[];
+          inspectionStartAt?: Date;
+          solveStartAt?: Date;
+        }>;
+      };
+      ghostUser: { id: string; username: string; country: string | null; gamesPlayed: number; gamesWon: number };
+      isOldGhost: boolean;
+      isSeed?: boolean;
+    },
+  ) {
+    if (!socket.userId) return;
+    const { ghostSession, ghostUser, isOldGhost } = ghostData;
+
+    const raceId = `race_${Date.now()}_${socket.userId}`;
+    socket.ghostRaceId = raceId;
+
+    const ghostSolves = (ghostSession.solves || [])
+      .slice()
+      .sort((a, b) => a.roundNumber - b.roundNumber)
+      .map((s) => ({
+        scramble: s.scramble,
+        timeMs: s.timeMs,
+        moves: s.moves || [],
+        inspectionStartAt: s.inspectionStartAt?.getTime() || 0,
+        solveStartAt: s.solveStartAt?.getTime() || 0,
+      }));
+
+    this.activeGhostRaces.set(raceId, {
+      oderId: socket.userId,
+      puzzleSize,
+      ghostSessionId: ghostSession.id,
+      ghostUserId: ghostUser.id,
+      ghostUsername: ghostUser.username,
+      ghostMmrAtRecording: ghostSession.mmrAtRecording || 1000,
+      isOldGhost,
+      isSeed: ghostData.isSeed,
+      currentRound: 0,
+      totalRounds: ghostSolves.length,
+      userTimes: [],
+      ghostTimes: ghostSolves.map((s) => s.timeMs),
+      ghostSolves,
+    });
+
+    socket.emit('ghost_race_started', {
+      raceId,
+      puzzleSize,
+      totalRounds: ghostSolves.length,
+      ghostUsername: ghostUser.username,
+      ghostMmr: ghostSession.mmrAtRecording || 1000,
+      isOldGhost,
+      isSeed: !!ghostData.isSeed,
+      ghostCountry: ghostUser.country,
+      ghostGamesPlayed: ghostUser.gamesPlayed,
+      ghostGamesWon: ghostUser.gamesWon,
+    });
+
+    setTimeout(() => this.startGhostRaceRound(raceId), 2000);
+  }
+
+  // Ranked ghost fallback: prefer a real ghost near the player's MMR, else a
+  // synthetic seed so there is always an opponent.
+  private async startGhostFallback(socket: AuthenticatedSocket, entry: QueueEntry, size: PuzzleSize) {
+    if (!this.soloService || !socket.userId) return;
+    try {
+      let ghostData:
+        | {
+            ghostSession: any;
+            ghostUser: { id: string; username: string; country: string | null; gamesPlayed: number; gamesWon: number };
+            isOldGhost: boolean;
+            isSeed?: boolean;
+          }
+        | null = await this.soloService.findGhostToRace(entry.userId, size);
+      if (!ghostData) {
+        ghostData = this.soloService.buildSeedGhost(size, entry.mmr);
+      }
+      this.beginGhostRace(socket, size, ghostData);
+    } catch (e) {
+      console.error('Ghost fallback error:', e);
+      socket.emit('error', { code: 'QUEUE_ERROR', message: 'Failed to start race' });
+    }
   }
 
   private async startGhostRaceRound(raceId: string) {
@@ -1222,8 +1300,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       race.isOldGhost,
     );
 
-    // Save the ghost race to database for history tracking
-    await this.soloService.saveGhostRace({
+    // Save to history. Skip synthetic seed ghosts (no real session/owner FK).
+    if (!race.isSeed) await this.soloService.saveGhostRace({
       racerId: race.oderId,
       ghostSessionId: race.ghostSessionId,
       ghostUserId: race.ghostUserId,
@@ -1614,6 +1692,29 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       newMmr: result.p2NewMmr,
       newLeague: result.p2NewLeague,
     });
+
+    // Snapshot each player's solves into the ghost pool (grows liquidity;
+    // respects per-user opt-out). Uses post-match MMR as the ghost's rating.
+    if (this.soloService) {
+      try {
+        const full = await this.matchesService.getMatchWithSolves(matchId);
+        const solves = (full.solves || []).slice().sort((a, b) => a.roundNumber - b.roundNumber);
+        await this.soloService.recordGhost(
+          matchState.player1Id,
+          full.puzzleSize,
+          result.p1NewMmr,
+          solves.map((s) => ({ roundNumber: s.roundNumber, scramble: s.scramble, timeMs: s.p1TimeMs, moves: (s.p1Moves as any) || [] })),
+        );
+        await this.soloService.recordGhost(
+          matchState.player2Id,
+          full.puzzleSize,
+          result.p2NewMmr,
+          solves.map((s) => ({ roundNumber: s.roundNumber, scramble: s.scramble, timeMs: s.p2TimeMs, moves: (s.p2Moves as any) || [] })),
+        );
+      } catch (e) {
+        console.error('Ghost snapshot error:', e);
+      }
+    }
 
     // Clean up match state after delay
     setTimeout(() => {

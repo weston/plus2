@@ -314,11 +314,27 @@ export function getKFactor(rating: number, isProvisional: boolean): number {
 export function calculateRatingChange(
   playerRating: number,
   opponentRating: number,
-  actualScore: number, // 1 = win, 0 = loss
+  actualScore: number, // 1 = win, 0.5 = draw, 0 = loss
   isProvisional: boolean
 ): number {
   const expected = calculateExpectedScore(playerRating, opponentRating);
   const k = getKFactor(playerRating, isProvisional);
+  return Math.round(k * (actualScore - expected));
+}
+
+// Rating change when racing a GHOST. Ghosts are deterministic and re-raceable,
+// so they pay out at a reduced rate (live PvP is worth more) and never change the
+// ghost owner's rating. The opponent rating is the owner's MMR at recording time.
+export const GHOST_K_MULTIPLIER = 0.5;
+
+export function calculateGhostRatingChange(
+  racerRating: number,
+  ghostRating: number,
+  actualScore: number, // 1 = win, 0.5 = draw, 0 = loss
+  isProvisional: boolean
+): number {
+  const expected = calculateExpectedScore(racerRating, ghostRating);
+  const k = getKFactor(racerRating, isProvisional) * GHOST_K_MULTIPLIER;
   return Math.round(k * (actualScore - expected));
 }
 
@@ -333,6 +349,11 @@ export const MATCHMAKING_INITIAL_RANGE = 100;
 export const MATCHMAKING_RANGE_EXPANSION = 50;
 export const MATCHMAKING_EXPAND_INTERVAL_MS = 5000;
 export const MATCHMAKING_MAX_RANGE = 500;
+
+// Ranked: how long to look for a live human before falling back to a ghost.
+export const RANKED_HUMAN_WAIT_MS = 12000;
+// Games at the provisional (high-K) rate before a rating settles.
+export const PROVISIONAL_GAMES = 10;
 
 // =============================================================================
 // SCRAMBLE LENGTHS (based on WCA standards)
@@ -361,7 +382,23 @@ export const SOLO_TARGET_TIMES_3X3: Record<LeagueTier, number> = {
 };
 
 // K-factor multiplier for solo mode (lower than real matches to incentivize PvP)
+// Superseded by GHOST_K_MULTIPLIER for ghost races; kept for back-compat.
 export const SOLO_K_FACTOR_MULTIPLIER = 0.5;
+
+// Approximate solve-time scaling per puzzle relative to 3x3, used to derive
+// synthetic seed-ghost target times for puzzles other than 3x3.
+export const PUZZLE_TIME_MULTIPLIER: Record<PuzzleSize, number> = {
+  '2x2': 0.35,
+  '3x3': 1,
+  '4x4': 2.3,
+  '5x5': 4.2,
+};
+
+// Target time (ms) for a synthetic seed ghost at a given puzzle + league. These
+// guarantee there's always an opponent to race, even at zero population.
+export function getSeedTargetTime(puzzleSize: PuzzleSize, league: LeagueTier): number {
+  return Math.round(SOLO_TARGET_TIMES_3X3[league] * PUZZLE_TIME_MULTIPLIER[puzzleSize]);
+}
 
 // Session statuses
 export const SOLO_SESSION_STATUSES = ['in_progress', 'completed', 'abandoned'] as const;

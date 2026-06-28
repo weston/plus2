@@ -10,12 +10,13 @@ import {
   MoveRecord,
   SCRAMBLE_LENGTHS,
   getLeagueFromRating,
+  getSeedTargetTime,
+  calculateGhostRatingChange,
   LeagueTier,
 } from '@plus2/shared';
 
 const ROUNDS_PER_SESSION = 5;
 const GHOST_AGE_LIMIT_MS = 7 * 24 * 60 * 60 * 1000; // 1 week in ms
-const K_FACTOR = 32; // ELO K-factor for MMR calculations
 
 // Simple scramble generator
 function generateScramble(puzzleSize: PuzzleSize): string {
@@ -511,9 +512,108 @@ export class SoloService {
   }
 
   /**
+   * Snapshot a set of solves into a completed ghost session so others can race
+   * it. Used to grow the ghost pool from ranked play (and, later, practice).
+   * Respects the user's ghost opt-out preference.
+   */
+  async recordGhost(
+    userId: string,
+    puzzleSize: PuzzleSize,
+    mmr: number,
+    solves: Array<{ roundNumber: number; scramble: string; timeMs: number | null; moves: MoveRecord[] }>,
+  ): Promise<void> {
+    const valid = solves.filter((s) => s.scramble);
+    if (valid.length === 0) return;
+
+    const user = await this.usersService.findById(userId).catch(() => null);
+    if (user?.preferences?.ghostOptOut) return; // user opted out of contributing ghosts
+
+    const session = this.sessionRepository.create({
+      userId,
+      puzzleSize,
+      totalRounds: valid.length,
+      completedRounds: valid.length,
+      status: 'completed',
+      startedAt: new Date(),
+      endedAt: new Date(),
+      mmrAtRecording: mmr,
+    });
+    await this.sessionRepository.save(session);
+
+    const entities = valid.map((s) =>
+      this.solveRepository.create({
+        sessionId: session.id,
+        roundNumber: s.roundNumber,
+        scramble: s.scramble,
+        status: s.timeMs != null ? 'completed' : 'dnf',
+        timeMs: s.timeMs ?? null,
+        moves: s.moves || [],
+        moveCount: (s.moves || []).length,
+      }),
+    );
+    await this.solveRepository.save(entities);
+  }
+
+  /**
+   * Build a synthetic "seed" ghost — a pace bot at the player's level. Used as the
+   * last fallback in ranked when no human and no real ghost is available, so there
+   * is ALWAYS an opponent. Not persisted; flagged isSeed so no GhostRace row is saved.
+   */
+  buildSeedGhost(
+    puzzleSize: PuzzleSize,
+    mmr: number,
+  ): {
+    ghostSession: SoloSession;
+    ghostUser: { id: string; username: string; country: string | null; gamesPlayed: number; gamesWon: number };
+    isOldGhost: boolean;
+    isSeed: boolean;
+  } {
+    const league = getLeagueFromRating(mmr);
+    const target = getSeedTargetTime(puzzleSize, league);
+
+    const solves: SoloSolve[] = [];
+    for (let i = 0; i < ROUNDS_PER_SESSION; i++) {
+      const jitter = 1 + (Math.random() * 0.2 - 0.1); // ±10%
+      solves.push({
+        roundNumber: i + 1,
+        scramble: generateScramble(puzzleSize),
+        timeMs: Math.round(target * jitter),
+        moves: [],
+      } as unknown as SoloSolve);
+    }
+
+    const ghostSession = {
+      id: `seed_${puzzleSize}_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
+      userId: 'seed',
+      puzzleSize,
+      mmrAtRecording: mmr,
+      createdAt: new Date(),
+      solves,
+    } as unknown as SoloSession;
+
+    const label = league.charAt(0).toUpperCase() + league.slice(1);
+    return {
+      ghostSession,
+      ghostUser: { id: 'seed', username: `${label} Pace`, country: null, gamesPlayed: 0, gamesWon: 0 },
+      isOldGhost: false,
+      isSeed: true,
+    };
+  }
+
+  /** Seed ghost sized to a user's current MMR for the given puzzle. */
+  async buildSeedGhostForUser(userId: string, puzzleSize: PuzzleSize) {
+    const stats = await this.usersService.getPuzzleStats(userId, puzzleSize);
+    return this.buildSeedGhost(puzzleSize, stats.mmr);
+  }
+
+  /**
    * Calculate race result after completing all rounds.
-   * The racer ALWAYS gains/loses MMR based on the ghost's MMR at recording time.
-   * The ghost creator's MMR is updated separately (only for ghosts < 1 week old).
+   *
+   * Ranked-ghost rating model (see design): the RACER gains/loses MMR at a
+   * reduced rate (GHOST_K_MULTIPLIER) against the ghost's MMR at recording time,
+   * and it counts as a ranked game (provisional-aware). The ghost OWNER is
+   * frozen — racing a recording never changes the owner's rating. `ghostUserId`
+   * and `isOldGhost` are retained for record-keeping (saveGhostRace).
    */
   async calculateGhostRaceResult(
     oderId: string,
@@ -559,26 +659,20 @@ export class SoloService {
     const userStats = await this.usersService.getPuzzleStats(oderId, puzzleSize);
     const mmrBefore = userStats.mmr;
 
-    // Calculate MMR change for racer using ELO formula
-    // Racer ALWAYS gains/loses MMR regardless of ghost age.
-    // A drawn race counts as a half-point (0.5), not a loss.
-    const expectedScore = 1 / (1 + Math.pow(10, (ghostMmrAtRecording - userStats.mmr) / 400));
+    // Reduced-K, provisional-aware change vs the ghost's recorded MMR.
+    // Draw counts as a half-point.
     const actualScore = isDraw ? 0.5 : userWon ? 1 : 0;
-    const mmrDelta = Math.round(K_FACTOR * (actualScore - expectedScore));
+    const mmrDelta = calculateGhostRatingChange(
+      mmrBefore,
+      ghostMmrAtRecording,
+      actualScore,
+      userStats.isProvisional,
+    );
+    const newMmr = Math.max(0, mmrBefore + mmrDelta);
 
-    // Apply MMR change to racer
-    const newMmr = Math.max(0, userStats.mmr + mmrDelta);
-    await this.usersService.updateMmr(oderId, puzzleSize, newMmr);
-
-    // Update ghost creator's MMR (only if ghost is less than 1 week old)
-    if (!isOldGhost && ghostUserId !== oderId) {
-      const ghostCreatorStats = await this.usersService.getPuzzleStats(ghostUserId, puzzleSize);
-      const ghostExpectedScore = 1 / (1 + Math.pow(10, (userStats.mmr - ghostMmrAtRecording) / 400));
-      const ghostActualScore = isDraw ? 0.5 : userWon ? 0 : 1; // Ghost wins if user loses
-      const ghostMmrDelta = Math.round(K_FACTOR * (ghostActualScore - ghostExpectedScore));
-      const ghostNewMmr = Math.max(0, ghostCreatorStats.mmr + ghostMmrDelta);
-      await this.usersService.updateMmr(ghostUserId, puzzleSize, ghostNewMmr);
-    }
+    // Apply as a ranked game (updates league, games played/won, provisional).
+    // The ghost owner is intentionally NOT updated.
+    await this.usersService.updateRatingDirect(oderId, puzzleSize, newMmr, userWon);
 
     const newLeague = getLeagueFromRating(newMmr);
 

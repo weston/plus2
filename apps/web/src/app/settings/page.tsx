@@ -44,6 +44,7 @@ export default function SettingsPage() {
   // Appearance state
   const [cubeColors, setCubeColors] = useState<Record<string, string>>(DEFAULT_CUBE_COLORS);
   const [animationSpeed, setAnimationSpeed] = useState(DEFAULT_ANIMATION_SPEED);
+  const [ghostOptOut, setGhostOptOut] = useState(false);
   const [isSavingPrefs, setIsSavingPrefs] = useState(false);
 
   // Account state
@@ -79,6 +80,9 @@ export default function SettingsPage() {
       }
       if (prefs.animationSpeed !== undefined) {
         setAnimationSpeed(prefs.animationSpeed);
+      }
+      if (prefs.ghostOptOut !== undefined) {
+        setGhostOptOut(prefs.ghostOptOut);
       }
     }).catch(() => {
       // Failed to load preferences, use defaults
@@ -157,7 +161,12 @@ export default function SettingsPage() {
   };
 
   // Save preferences to server
-  const savePreferences = async (prefs: { animationSpeed?: number; cubeColors?: Record<string, string> }) => {
+  const handleGhostOptOutChange = (optOut: boolean) => {
+    setGhostOptOut(optOut);
+    savePreferences({ ghostOptOut: optOut });
+  };
+
+  const savePreferences = async (prefs: { animationSpeed?: number; cubeColors?: Record<string, string>; ghostOptOut?: boolean }) => {
     if (!accessToken) return;
     setIsSavingPrefs(true);
     try {
@@ -404,6 +413,26 @@ export default function SettingsPage() {
                   <span>Fast</span>
                 </div>
               </div>
+            </div>
+
+            {/* Ghost contribution */}
+            <div className="mt-8 pt-6 border-t border-gray-700">
+              <h2 className="text-xl font-semibold mb-4">Ghost Races</h2>
+              <label className="flex items-start gap-3 cursor-pointer bg-gray-800 p-4 rounded-lg">
+                <input
+                  type="checkbox"
+                  className="mt-1 accent-blue-500 w-4 h-4"
+                  checked={!ghostOptOut}
+                  onChange={(e) => handleGhostOptOutChange(!e.target.checked)}
+                />
+                <span>
+                  <span className="block font-medium">Contribute my solves as ghosts</span>
+                  <span className="block text-sm text-gray-400">
+                    When on, your ranked race solves can be raced by other players as ghost
+                    opponents. This helps everyone always have someone to race.
+                  </span>
+                </span>
+              </label>
             </div>
 
             {isSavingPrefs && (

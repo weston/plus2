@@ -412,6 +412,7 @@ export default function SoloPage() {
               puzzleSize={solo.puzzleSize}
               scramble={solo.scramble}
               moves={moves}
+              onSolved={handleStopTimer}
               className="h-64 md:h-96"
             />
           </div>

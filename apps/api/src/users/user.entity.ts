@@ -63,5 +63,7 @@ export class User {
   preferences: {
     animationSpeed?: number;
     cubeColors?: Record<string, string>;
+    // When true, the user's solves are NOT saved as ghosts others can race.
+    ghostOptOut?: boolean;
   };
 }

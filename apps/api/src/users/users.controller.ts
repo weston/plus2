@@ -14,7 +14,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { UsersService } from './users.service';
-import { IsString, MinLength, MaxLength, Matches, IsNumber, IsOptional, IsObject, Min, Max, Length } from 'class-validator';
+import { IsString, MinLength, MaxLength, Matches, IsNumber, IsOptional, IsObject, IsBoolean, Min, Max, Length } from 'class-validator';
 import { MatchesService } from '../matches/matches.service';
 import { SoloService } from '../solo/solo.service';
 import type { PuzzleSize } from '@plus2/shared';
@@ -37,6 +37,10 @@ class UpdatePreferencesDto {
   @IsOptional()
   @IsObject()
   cubeColors?: Record<string, string>;
+
+  @IsOptional()
+  @IsBoolean()
+  ghostOptOut?: boolean;
 }
 
 class UpdateCountryDto {

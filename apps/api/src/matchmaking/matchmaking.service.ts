@@ -161,6 +161,15 @@ export class MatchmakingService {
     return null;
   }
 
+  // Entries that have waited at least `olderThanMs` with no human match —
+  // candidates for a ghost fallback so there's always an opponent.
+  getStaleEntries(puzzleSize: PuzzleSize, olderThanMs: number): QueueEntry[] {
+    const queue = this.queues.get(puzzleSize);
+    if (!queue) return [];
+    const now = Date.now();
+    return Array.from(queue.values()).filter((e) => now - e.joinedAt >= olderThanMs);
+  }
+
   getQueueSize(puzzleSize: PuzzleSize): number {
     return this.queues.get(puzzleSize)?.size || 0;
   }

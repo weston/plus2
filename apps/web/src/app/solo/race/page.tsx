@@ -67,6 +67,18 @@ function GhostRaceContent() {
     }
   }, [user, accessToken, router, _hasHydrated]);
 
+  // Auto-start a ghost race when arriving from the ranked "Find Race" fallback
+  // (?auto=1). The server seed-falls-back, so this always lands an opponent.
+  const autoStartedRef = useRef(false);
+  useEffect(() => {
+    if (searchParams.get('auto') === '1' && !autoStartedRef.current && accessToken) {
+      autoStartedRef.current = true;
+      const size = (searchParams.get('size') as PuzzleSize) || '3x3';
+      race.startRace(size, opponentId || undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken]);
+
   // Start replaying ghost moves from inspection start
   const startGhostReplay = useCallback(() => {
     if (!race.ghostMoves || race.ghostMoves.length === 0) {
@@ -583,6 +595,7 @@ function GhostRaceContent() {
                 puzzleSize={race.puzzleSize}
                 scramble={race.scramble}
                 moves={moves}
+                onSolved={handleStopTimer}
                 className="h-48 md:h-64"
               />
             </div>

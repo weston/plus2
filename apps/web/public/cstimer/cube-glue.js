@@ -117,6 +117,20 @@
     // Re-fetch the twisty each time — initializeTwisty() (used by reset) makes a new one.
     function tw() { return scene.getTwisty(); }
 
+    // Fire onSolved exactly once each time a move leaves the cube solved (so the
+    // page can auto-stop the timer). Re-arms when the cube leaves the solved state.
+    var solvedFired = false;
+    scene.addMoveListener(function (move, step) {
+      if (step !== 2) return; // 2 = move animation finished (state committed)
+      var solved = isSolvedFacelet(tw().getFacelet(tw()), dim);
+      if (solved && !solvedFired) {
+        solvedFired = true;
+        if (typeof opts.onSolved === 'function') opts.onSolved();
+      } else if (!solved) {
+        solvedFired = false;
+      }
+    });
+
     function applyMove(token, animate) {
       var mv = parseWCA(token, dim);
       if (!mv) return;
