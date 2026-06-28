@@ -215,6 +215,11 @@ export const usersApi = {
   getGhostRecordingCount: (userId: string) =>
     request<{ count: number }>(`/users/${userId}/ghost-recordings`),
 
+  getWcaRecords: (wcaId: string) =>
+    request<{ wcaId: string; person: unknown; personalRecords: Record<string, { single?: { best: number }; average?: { best: number } }> | null }>(
+      `/users/wca/${encodeURIComponent(wcaId)}/records`,
+    ),
+
   getAvailableGhostsCount: (token: string, ghostUserId: string, puzzleSize = '3x3') =>
     request<{ count: number }>(`/users/${ghostUserId}/available-ghosts?puzzleSize=${puzzleSize}`, { token }),
 

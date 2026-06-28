@@ -7,7 +7,7 @@ import { usersApi, UserProfile } from '@/lib/api';
 import { LeagueBadge } from '@/components/LeagueBadge';
 import { CountryFlag } from '@/components/CountryFlag';
 import { useAuthStore } from '@/stores/auth';
-import { computeBadges } from '@plus2/shared';
+import { computeBadges, computeWcaBadges, type WcaPersonalRecords } from '@plus2/shared';
 import type { LeagueTier } from '@plus2/shared';
 
 interface MmrHistoryPoint {
@@ -124,6 +124,7 @@ export default function ProfilePage() {
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [ghostRecordingCount, setGhostRecordingCount] = useState(0);
   const [availableGhostsCount, setAvailableGhostsCount] = useState(0);
+  const [wcaRecords, setWcaRecords] = useState<WcaPersonalRecords | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -139,6 +140,18 @@ export default function ProfilePage() {
         const profileData = await usersApi.getProfileByUsername(username);
         if (cancelled) return;
         setProfile(profileData);
+
+        // Pull official WCA records (public API) for WCA badges.
+        if (profileData.wcaId) {
+          usersApi
+            .getWcaRecords(profileData.wcaId)
+            .then((r) => {
+              if (!cancelled) setWcaRecords(r.personalRecords);
+            })
+            .catch(() => {});
+        } else {
+          setWcaRecords(null);
+        }
 
         // Load MMR history, matches, ghost races, and ghost recording count
         const [historyData, matchesData, ghostRacesData, ghostData] = await Promise.all([
@@ -278,7 +291,10 @@ export default function ProfilePage() {
 
         {/* Badges */}
         {(() => {
-          const badges = computeBadges({ league: profile.league as LeagueTier, stats: profile.stats });
+          const badges = [
+            ...computeBadges({ league: profile.league as LeagueTier, stats: profile.stats }),
+            ...computeWcaBadges(wcaRecords),
+          ];
           if (badges.length === 0) return null;
           const tierRing: Record<string, string> = {
             bronze: 'ring-amber-700/50',

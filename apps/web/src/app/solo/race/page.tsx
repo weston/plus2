@@ -391,9 +391,9 @@ function GhostRaceContent() {
           <div className="card mt-6">
             <h3 className="font-semibold mb-2">MMR Rules for Ghost Races</h3>
             <ul className="text-gray-400 text-sm space-y-1">
-              <li>&#8226; You always gain or lose MMR based on the ghost's skill at recording time</li>
-              <li>&#8226; Ghost creators gain/lose MMR when you race their ghost (if less than 1 week old)</li>
-              <li>&#8226; Older ghosts (1+ week) no longer affect the creator's MMR</li>
+              <li>&#8226; You gain or lose MMR vs the ghost&apos;s rating at recording time</li>
+              <li>&#8226; Ghost races use a reduced rate &mdash; live races are worth more</li>
+              <li>&#8226; The ghost&apos;s owner is never affected by you racing their ghost</li>
             </ul>
           </div>
         </div>
@@ -436,7 +436,7 @@ function GhostRaceContent() {
             </div>
             {race.isOldGhost && (
               <div className="text-yellow-500 text-xs mt-2">
-                Old ghost - creator's MMR was not affected
+                Recorded over a week ago
               </div>
             )}
           </div>
@@ -478,7 +478,7 @@ function GhostRaceContent() {
               ) : null}
             </div>
             {race.isOldGhost && (
-              <div className="text-xs text-yellow-500">Old ghost - creator's MMR not affected</div>
+              <div className="text-xs text-yellow-500">Recorded over a week ago</div>
             )}
           </div>
           <div className="text-lg font-bold">

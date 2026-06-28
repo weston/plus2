@@ -483,3 +483,35 @@ export function computeBadges(input: {
 
   return badges;
 }
+
+// WCA personal records shape (subset) from worldcubeassociation.org/api/v0.
+// Times are in CENTISECONDS (e.g. 567 = 5.67s).
+export interface WcaPersonalRecords {
+  [eventId: string]: {
+    single?: { best: number };
+    average?: { best: number };
+  };
+}
+
+/** Badges earned from official WCA results (centiseconds). */
+export function computeWcaBadges(records: WcaPersonalRecords | null | undefined): Badge[] {
+  if (!records || Object.keys(records).length === 0) return [];
+  const badges: Badge[] = [
+    { id: 'wca-competitor', label: 'WCA Competitor', description: 'Has official WCA competition results', icon: '🌐', tier: 'special' },
+  ];
+
+  const single333 = records['333']?.single?.best; // centiseconds
+  const speed: Array<[number, string, string, BadgeTier]> = [
+    [2000, 'wca-sub20', 'Official Sub-20', 'silver'],
+    [1500, 'wca-sub15', 'Official Sub-15', 'gold'],
+    [1000, 'wca-sub10', 'Official Sub-10', 'special'],
+  ];
+  if (single333 != null) {
+    for (const [cs, id, label, tier] of speed) {
+      if (single333 <= cs) {
+        badges.push({ id, label, description: `Official 3x3 single under ${cs / 100}s`, icon: '🏅', tier });
+      }
+    }
+  }
+  return badges;
+}
