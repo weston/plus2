@@ -24,8 +24,9 @@ export class User {
   @Index()
   username: string;
 
-  // Nullable: OAuth-only accounts (Google SSO) have no password.
-  @Column({ name: 'password_hash', length: 255, nullable: true })
+  // Nullable: OAuth-only accounts (Google SSO) have no password. Explicit `type`
+  // is required because the `string | null` TS type reflects as `Object`.
+  @Column({ name: 'password_hash', type: 'varchar', length: 255, nullable: true })
   passwordHash: string | null;
 
   @Column({ default: 1000 })
@@ -52,7 +53,7 @@ export class User {
   oauthId: string;
 
   // Linked WCA (World Cube Association) ID, e.g. "2015FOOB01".
-  @Column({ name: 'wca_id', nullable: true, length: 20 })
+  @Column({ name: 'wca_id', type: 'varchar', nullable: true, length: 20 })
   wcaId: string | null;
 
   @Column({ nullable: true, length: 2 })
