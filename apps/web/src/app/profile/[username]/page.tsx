@@ -7,6 +7,7 @@ import { usersApi, UserProfile } from '@/lib/api';
 import { LeagueBadge } from '@/components/LeagueBadge';
 import { CountryFlag } from '@/components/CountryFlag';
 import { useAuthStore } from '@/stores/auth';
+import { computeBadges } from '@plus2/shared';
 import type { LeagueTier } from '@plus2/shared';
 
 interface MmrHistoryPoint {
@@ -229,6 +230,17 @@ export default function ProfilePage() {
                 <div className="flex items-center gap-2 mt-1">
                   <LeagueBadge league={profile.league as LeagueTier} />
                   <span className="text-gray-400">{profile.mmr} MMR</span>
+                  {profile.wcaId && (
+                    <a
+                      href={`https://www.worldcubeassociation.org/persons/${profile.wcaId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
+                      title="View WCA profile"
+                    >
+                      WCA: {profile.wcaId}
+                    </a>
+                  )}
                 </div>
               </div>
             </div>
@@ -263,6 +275,35 @@ export default function ProfilePage() {
             </div>
           </div>
         </div>
+
+        {/* Badges */}
+        {(() => {
+          const badges = computeBadges({ league: profile.league as LeagueTier, stats: profile.stats });
+          if (badges.length === 0) return null;
+          const tierRing: Record<string, string> = {
+            bronze: 'ring-amber-700/50',
+            silver: 'ring-gray-400/50',
+            gold: 'ring-yellow-400/60',
+            special: 'ring-purple-400/60',
+          };
+          return (
+            <div className="card mb-6">
+              <h2 className="text-xl font-bold mb-4">Badges</h2>
+              <div className="flex flex-wrap gap-3">
+                {badges.map((b) => (
+                  <div
+                    key={b.id}
+                    title={b.description}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800 ring-1 ${tierRing[b.tier] || 'ring-gray-600'}`}
+                  >
+                    <span className="text-xl leading-none">{b.icon}</span>
+                    <span className="text-sm font-medium">{b.label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Stats by Puzzle */}
         <div className="card mb-6">

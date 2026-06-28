@@ -121,6 +121,22 @@ export class UsersController {
     return this.usersService.getProfileByUsername(username);
   }
 
+  // Public WCA records proxy (no auth / no creds needed — the WCA persons API is
+  // public). Used to surface official PBs for a linked WCA ID.
+  @Get('wca/:wcaId/records')
+  async getWcaRecords(@Param('wcaId') wcaId: string) {
+    try {
+      const res = await fetch(
+        `https://www.worldcubeassociation.org/api/v0/persons/${encodeURIComponent(wcaId)}`,
+      );
+      if (!res.ok) return { wcaId, person: null, personalRecords: null };
+      const data = (await res.json()) as { person?: unknown; personal_records?: unknown };
+      return { wcaId, person: data.person ?? null, personalRecords: data.personal_records ?? null };
+    } catch {
+      return { wcaId, person: null, personalRecords: null };
+    }
+  }
+
   @Get(':id/matches')
   async getUserMatches(
     @Param('id') id: string,

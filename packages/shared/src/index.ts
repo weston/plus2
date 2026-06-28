@@ -403,3 +403,83 @@ export function getSeedTargetTime(puzzleSize: PuzzleSize, league: LeagueTier): n
 // Session statuses
 export const SOLO_SESSION_STATUSES = ['in_progress', 'completed', 'abandoned'] as const;
 export type SoloSessionStatus = (typeof SOLO_SESSION_STATUSES)[number];
+
+// =============================================================================
+// BADGES (achievements derived from existing stats — no extra storage)
+// =============================================================================
+
+export type BadgeTier = 'bronze' | 'silver' | 'gold' | 'special';
+
+export interface Badge {
+  id: string;
+  label: string;
+  description: string;
+  icon: string; // emoji
+  tier: BadgeTier;
+}
+
+interface BadgeStatLike {
+  puzzleSize: string;
+  gamesWon: number;
+  gamesPlayed: number;
+  bestTimeMs: number | null;
+}
+
+const LEAGUE_BADGE_ICONS: Record<LeagueTier, string> = {
+  bronze: '🥉',
+  silver: '🥈',
+  gold: '🥇',
+  platinum: '💠',
+  diamond: '💎',
+  master: '👑',
+  grandmaster: '🏅',
+};
+
+/** Compute earned badges from a user's league + per-puzzle stats. Pure. */
+export function computeBadges(input: {
+  league: LeagueTier;
+  stats: BadgeStatLike[];
+}): Badge[] {
+  const badges: Badge[] = [];
+  const totalWins = input.stats.reduce((sum, s) => sum + (s.gamesWon || 0), 0);
+  const totalGames = input.stats.reduce((sum, s) => sum + (s.gamesPlayed || 0), 0);
+  const best3x3 = input.stats.find((s) => s.puzzleSize === '3x3')?.bestTimeMs ?? null;
+
+  // Win milestones
+  if (totalWins >= 1) badges.push({ id: 'first-win', label: 'First Win', description: 'Won your first ranked race', icon: '🏆', tier: 'bronze' });
+  if (totalWins >= 10) badges.push({ id: 'wins-10', label: 'On a Roll', description: 'Won 10 ranked races', icon: '🔥', tier: 'silver' });
+  if (totalWins >= 100) badges.push({ id: 'wins-100', label: 'Centurion', description: 'Won 100 ranked races', icon: '💯', tier: 'gold' });
+
+  // Volume
+  if (totalGames >= 50) badges.push({ id: 'veteran', label: 'Veteran', description: 'Played 50 ranked races', icon: '🎖️', tier: 'silver' });
+
+  // 3x3 speed records
+  const speedTiers: Array<[number, string, string, BadgeTier]> = [
+    [30000, 'sub30', 'Sub-30', 'bronze'],
+    [20000, 'sub20', 'Sub-20', 'silver'],
+    [15000, 'sub15', 'Sub-15', 'gold'],
+    [10000, 'sub10', 'Sub-10', 'special'],
+  ];
+  if (best3x3 != null) {
+    for (const [ms, id, label, tier] of speedTiers) {
+      if (best3x3 <= ms) {
+        badges.push({ id, label, description: `Solved a 3x3 in under ${ms / 1000}s`, icon: '⚡', tier });
+      }
+    }
+  }
+
+  // League badges (every tier up to and including the current global league)
+  const rank = LEAGUE_TIERS.indexOf(input.league);
+  for (let i = 0; i <= rank; i++) {
+    const tier = LEAGUE_TIERS[i];
+    badges.push({
+      id: `league-${tier}`,
+      label: `${tier.charAt(0).toUpperCase()}${tier.slice(1)} League`,
+      description: `Reached the ${tier} league`,
+      icon: LEAGUE_BADGE_ICONS[tier],
+      tier: i >= 4 ? 'special' : i >= 2 ? 'gold' : 'silver',
+    });
+  }
+
+  return badges;
+}

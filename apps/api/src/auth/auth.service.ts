@@ -115,6 +115,10 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    if (!user.passwordHash) {
+      throw new UnauthorizedException('This account uses Google sign-in.');
+    }
+
     const isPasswordValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!isPasswordValid) {
       throw new UnauthorizedException('Invalid credentials');
@@ -154,6 +158,89 @@ export class AuthService {
 
   async validateUser(payload: JwtPayload): Promise<User | null> {
     return this.userRepository.findOne({ where: { id: payload.sub } });
+  }
+
+  /**
+   * Find-or-create a user from an OAuth provider profile (e.g. Google SSO),
+   * then issue tokens. Links to an existing account by provider id, else email.
+   */
+  async oauthLogin(params: {
+    provider: string;
+    oauthId: string;
+    email: string;
+    name?: string;
+    wcaId?: string | null;
+  }) {
+    const email = params.email.toLowerCase();
+
+    // 1. Existing OAuth link
+    let user = await this.userRepository.findOne({
+      where: { oauthProvider: params.provider, oauthId: params.oauthId },
+    });
+
+    // 2. Existing local account with the same email — link it
+    if (!user) {
+      user = await this.userRepository.findOne({ where: { email } });
+      if (user) {
+        user.oauthProvider = params.provider;
+        user.oauthId = params.oauthId;
+        await this.userRepository.save(user);
+      }
+    }
+
+    // 3. Brand new account (with default stats + keybindings, like register)
+    if (!user) {
+      const username = await this.generateUniqueUsername(params.name || email.split('@')[0]);
+      user = await this.userRepository.manager.transaction(async (manager) => {
+        const created = await manager.save(
+          manager.create(User, {
+            email,
+            username,
+            passwordHash: null,
+            oauthProvider: params.provider,
+            oauthId: params.oauthId,
+          }),
+        );
+        await Promise.all(
+          PUZZLE_SIZES.map((size) =>
+            manager.save(manager.create(UserPuzzleStats, { userId: created.id, puzzleSize: size })),
+          ),
+        );
+        await manager.save(
+          manager.create(KeybindingProfile, {
+            userId: created.id,
+            name: 'Default',
+            isActive: true,
+            bindings: DEFAULT_KEYBINDINGS,
+          }),
+        );
+        return created;
+      });
+    }
+
+    if (params.wcaId) user.wcaId = params.wcaId;
+    user.lastLoginAt = new Date();
+    await this.userRepository.save(user);
+
+    return { ...this.generateTokens(user), user: this.sanitizeUser(user) };
+  }
+
+  private async generateUniqueUsername(base: string): Promise<string> {
+    let clean = base.replace(/[^a-zA-Z0-9_]/g, '').slice(0, 24) || 'cuber';
+    if (clean.length < 3) clean = `${clean}cuber`;
+    let candidate = clean;
+    let n = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const exists = await this.userRepository
+        .createQueryBuilder('u')
+        .where('LOWER(u.username) = LOWER(:un)', { un: candidate })
+        .getOne();
+      if (!exists) return candidate;
+      n += 1;
+      candidate = `${clean}${n}`.slice(0, 32);
+      if (n > 9999) return `${clean}${Date.now()}`.slice(0, 32);
+    }
   }
 
   private generateTokens(user: User) {

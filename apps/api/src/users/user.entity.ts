@@ -24,8 +24,9 @@ export class User {
   @Index()
   username: string;
 
-  @Column({ name: 'password_hash', length: 255 })
-  passwordHash: string;
+  // Nullable: OAuth-only accounts (Google SSO) have no password.
+  @Column({ name: 'password_hash', length: 255, nullable: true })
+  passwordHash: string | null;
 
   @Column({ default: 1000 })
   @Index()
@@ -49,6 +50,10 @@ export class User {
 
   @Column({ name: 'oauth_id', nullable: true, length: 255 })
   oauthId: string;
+
+  // Linked WCA (World Cube Association) ID, e.g. "2015FOOB01".
+  @Column({ name: 'wca_id', nullable: true, length: 20 })
+  wcaId: string | null;
 
   @Column({ nullable: true, length: 2 })
   country: string; // ISO 3166-1 alpha-2 code (e.g., 'US', 'GB', 'JP')

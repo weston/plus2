@@ -139,6 +139,7 @@ export interface UserProfile {
   mmr: number;
   league: string;
   country?: string;
+  wcaId?: string | null;
   createdAt: string;
   stats: Array<{
     id: string;

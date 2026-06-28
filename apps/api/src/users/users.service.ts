@@ -44,6 +44,7 @@ export class UsersService {
       mmr: user.mmr,
       league: user.league,
       country: user.country,
+      wcaId: user.wcaId || null,
       createdAt: user.createdAt.toISOString(),
       stats: user.puzzleStats.map((s) => ({
         id: s.id,
@@ -75,6 +76,7 @@ export class UsersService {
       mmr: user.mmr,
       league: user.league,
       country: user.country,
+      wcaId: user.wcaId || null,
       createdAt: user.createdAt.toISOString(),
       stats: user.puzzleStats.map((s) => ({
         id: s.id,
