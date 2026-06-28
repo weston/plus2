@@ -93,7 +93,10 @@ export class UsersService {
   }
 
   async updateUsername(userId: string, username: string): Promise<User> {
-    const existing = await this.userRepository.findOne({ where: { username } });
+    const existing = await this.userRepository
+      .createQueryBuilder('user')
+      .where('LOWER(user.username) = LOWER(:username)', { username })
+      .getOne();
     if (existing && existing.id !== userId) {
       throw new ConflictException('Username already taken');
     }
@@ -122,7 +125,6 @@ export class UsersService {
     puzzleSize: PuzzleSize,
     opponentMmr: number,
     won: boolean,
-    solveTimeMs?: number,
   ): Promise<{ mmrBefore: number; mmrAfter: number; league: string }> {
     const stats = await this.getPuzzleStats(userId, puzzleSize);
     const mmrBefore = stats.mmr;
@@ -152,20 +154,9 @@ export class UsersService {
       }
     }
 
-    // Update solve time stats if provided
-    if (solveTimeMs) {
-      if (!stats.bestTimeMs || solveTimeMs < stats.bestTimeMs) {
-        stats.bestTimeMs = solveTimeMs;
-      }
-      // Update rolling average (simplified)
-      if (!stats.avgTimeMs) {
-        stats.avgTimeMs = solveTimeMs;
-      } else {
-        stats.avgTimeMs = Math.round(
-          (stats.avgTimeMs * (stats.solvesCompleted - 1) + solveTimeMs) / stats.solvesCompleted,
-        );
-      }
-    }
+    // Note: per-solve time stats (best/avg) are tracked in incrementSolveStats,
+    // which has the correct solvesCompleted count. They are intentionally not
+    // recomputed here (doing so divided by a stale/zero count, yielding NaN).
 
     await this.statsRepository.save(stats);
 
@@ -227,6 +218,7 @@ export class UsersService {
 
   private async updateGlobalMmr(userId: string) {
     const allStats = await this.statsRepository.find({ where: { userId } });
+    if (allStats.length === 0) return; // no per-puzzle stats yet; nothing to roll up
     const maxMmr = Math.max(...allStats.map((s) => s.mmr));
     const globalLeague = getLeagueFromRating(maxMmr);
 

@@ -127,12 +127,16 @@ export default function ProfilePage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Guard against out-of-order responses overwriting newer state.
+    let cancelled = false;
+
     async function loadProfile() {
       try {
         setLoading(true);
         setError(null);
 
         const profileData = await usersApi.getProfileByUsername(username);
+        if (cancelled) return;
         setProfile(profileData);
 
         // Load MMR history, matches, ghost races, and ghost recording count
@@ -142,6 +146,7 @@ export default function ProfilePage() {
           usersApi.getUserGhostRaces(profileData.id),
           usersApi.getGhostRecordingCount(profileData.id),
         ]);
+        if (cancelled) return;
 
         setMmrHistory(historyData);
         setGhostRecordingCount(ghostData.count);
@@ -157,19 +162,27 @@ export default function ProfilePage() {
         // If logged in and viewing someone else's profile, check available ghosts
         if (accessToken && user && user.id !== profileData.id) {
           const availableData = await usersApi.getAvailableGhostsCount(accessToken, profileData.id);
+          if (cancelled) return;
           setAvailableGhostsCount(availableData.count);
         }
       } catch (err) {
+        if (cancelled) return;
         setError(err instanceof Error ? err.message : 'Failed to load profile');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
 
     if (username) {
       loadProfile();
     }
-  }, [username, accessToken, user]);
+
+    return () => {
+      cancelled = true;
+    };
+    // Depend on user.id (not the whole user object) so an MMR/profile update that
+    // replaces the user reference doesn't trigger a full refetch.
+  }, [username, accessToken, user?.id]);
 
   if (loading) {
     return (

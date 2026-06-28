@@ -104,6 +104,9 @@ export default function MatchPage() {
   const { sendMove, sendSolveComplete, sendRematch, sendRequeue } = useSocket();
   const moveSeqRef = useRef(0);
   const cubeRef = useRef<TwistyCubeHandle>(null);
+  // Synchronous guard so two keydowns in the same frame can't both start the
+  // solve timer (state updates don't apply until the next render).
+  const solveStartedRef = useRef(false);
 
   // Timer state for my cube (opponent uses server timestamp from store)
   const [myTimerStart, setMyTimerStart] = useState<number | null>(null);
@@ -128,6 +131,7 @@ export default function MatchPage() {
       setMyTimerRunning(false);
       setIsSolved(false);
       moveSeqRef.current = 0;
+      solveStartedRef.current = false;
     }
   }, [phase, currentRound]);
 
@@ -146,7 +150,8 @@ export default function MatchPage() {
 
   // Auto-start timer when inspection ends (phase changes to 'solving')
   useEffect(() => {
-    if (phase === 'solving' && !myTimerStart && !isSolved) {
+    if (phase === 'solving' && !solveStartedRef.current && !isSolved) {
+      solveStartedRef.current = true;
       const nowPerf = performance.now();
       const nowDate = Date.now();
       // Always use client's local time for timer display (server calculates final time)
@@ -170,9 +175,12 @@ export default function MatchPage() {
       moveSeqRef.current += 1;
       addMyMove(move);
 
-      // If this is a non-rotation move and timer hasn't started, start it
+      // If this is a non-rotation move and timer hasn't started, start it.
+      // Use a synchronous ref guard so rapid first moves can't double-start and
+      // reset the solve-start timestamp.
       // MUST set local solve start perf BEFORE sending move (for correct tMs calculation)
-      if (!isRotationMove(move) && !myTimerStart) {
+      if (!isRotationMove(move) && !solveStartedRef.current) {
+        solveStartedRef.current = true;
         const nowPerf = performance.now();
         const nowDate = Date.now();
         setMyTimerStart(nowDate);

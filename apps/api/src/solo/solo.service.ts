@@ -65,6 +65,20 @@ export class SoloService {
     private usersService: UsersService,
   ) {}
 
+  // Per-key serialization so rapid moves on the same solve don't clobber each
+  // other in the read-modify-write append below.
+  private locks = new Map<string, Promise<unknown>>();
+
+  private withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(key) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    this.locks.set(key, run);
+    run.catch(() => {}).finally(() => {
+      if (this.locks.get(key) === run) this.locks.delete(key);
+    });
+    return run;
+  }
+
   async createSession(userId: string, puzzleSize: PuzzleSize): Promise<SoloSession> {
     // Get user's current MMR for recording
     const stats = await this.usersService.getPuzzleStats(userId, puzzleSize);
@@ -125,25 +139,24 @@ export class SoloService {
     roundNumber: number,
     move: MoveRecord,
   ): Promise<void> {
-    // Use atomic update to prevent race condition when multiple moves arrive quickly
-    // This appends to the JSON array and increments move_count atomically
-    const moveJson = JSON.stringify([move]);
+    // Append the move via a serialized read-modify-write. The `moves` column is
+    // `simple-json` (text), so the previous `|| ::jsonb` SQL was invalid on both
+    // sqlite and postgres; the per-(session,round) lock keeps rapid moves from
+    // clobbering each other.
+    await this.withLock(`move:${sessionId}:${roundNumber}`, async () => {
+      const solve = await this.solveRepository.findOne({
+        where: { sessionId, roundNumber },
+      });
+      if (!solve) return;
 
-    await this.solveRepository
-      .createQueryBuilder()
-      .update()
-      .set({
-        moves: () => `moves || :moveJson::jsonb`,
-        moveCount: () => 'move_count + 1',
-        status: 'solving',
-        solveStartAt: () => 'COALESCE(solve_start_at, NOW())',
-      })
-      .where('session_id = :sessionId AND round_number = :roundNumber', {
-        sessionId,
-        roundNumber,
-      })
-      .setParameter('moveJson', moveJson)
-      .execute();
+      const moves = Array.isArray(solve.moves) ? solve.moves : [];
+      moves.push(move);
+      solve.moves = moves;
+      solve.moveCount = moves.length;
+      solve.status = 'solving';
+      if (!solve.solveStartAt) solve.solveStartAt = new Date();
+      await this.solveRepository.save(solve);
+    });
   }
 
   async recordSolveComplete(
@@ -173,10 +186,11 @@ export class SoloService {
       solve.status = 'completed';
       solve.solveEndAt = now;
       // Use client-provided time if available (more accurate since client tracks solve start)
-      // Fall back to server calculation if not provided
+      // Fall back to server calculation if possible; otherwise leave null rather
+      // than recording a bogus 0 ms solve that would skew the average.
       solve.timeMs = clientTimeMs ?? (solve.solveStartAt
         ? now.getTime() - solve.solveStartAt.getTime()
-        : 0);
+        : null);
     }
 
     // Store moves if provided (batch submission)
@@ -191,8 +205,8 @@ export class SoloService {
 
     await this.solveRepository.save(solve);
 
-    // Update completed rounds count
-    session.completedRounds = roundNumber;
+    // Update completed rounds count (never move it backwards on out-of-order/retried completions)
+    session.completedRounds = Math.max(session.completedRounds, roundNumber);
     await this.sessionRepository.save(session);
 
     const isSessionComplete = roundNumber >= ROUNDS_PER_SESSION;
@@ -241,10 +255,15 @@ export class SoloService {
   }
 
   async abandonSession(sessionId: string): Promise<void> {
-    await this.sessionRepository.update(sessionId, {
-      status: 'abandoned',
-      endedAt: new Date(),
-    });
+    // Only abandon a session that's still in progress, so we never overwrite a
+    // already-completed session's status/endedAt.
+    await this.sessionRepository.update(
+      { id: sessionId, status: 'in_progress' },
+      {
+        status: 'abandoned',
+        endedAt: new Date(),
+      },
+    );
   }
 
   // Get a random completed session to use as ghost opponent in matchmaking
@@ -535,14 +554,16 @@ export class SoloService {
       // Equal times = no winner for that round
     }
 
+    const isDraw = userWins === ghostWins;
     const userWon = userWins > ghostWins;
     const userStats = await this.usersService.getPuzzleStats(oderId, puzzleSize);
     const mmrBefore = userStats.mmr;
 
     // Calculate MMR change for racer using ELO formula
-    // Racer ALWAYS gains/loses MMR regardless of ghost age
+    // Racer ALWAYS gains/loses MMR regardless of ghost age.
+    // A drawn race counts as a half-point (0.5), not a loss.
     const expectedScore = 1 / (1 + Math.pow(10, (ghostMmrAtRecording - userStats.mmr) / 400));
-    const actualScore = userWon ? 1 : 0;
+    const actualScore = isDraw ? 0.5 : userWon ? 1 : 0;
     const mmrDelta = Math.round(K_FACTOR * (actualScore - expectedScore));
 
     // Apply MMR change to racer
@@ -553,7 +574,7 @@ export class SoloService {
     if (!isOldGhost && ghostUserId !== oderId) {
       const ghostCreatorStats = await this.usersService.getPuzzleStats(ghostUserId, puzzleSize);
       const ghostExpectedScore = 1 / (1 + Math.pow(10, (userStats.mmr - ghostMmrAtRecording) / 400));
-      const ghostActualScore = userWon ? 0 : 1; // Ghost wins if user loses
+      const ghostActualScore = isDraw ? 0.5 : userWon ? 0 : 1; // Ghost wins if user loses
       const ghostMmrDelta = Math.round(K_FACTOR * (ghostActualScore - ghostExpectedScore));
       const ghostNewMmr = Math.max(0, ghostCreatorStats.mmr + ghostMmrDelta);
       await this.usersService.updateMmr(ghostUserId, puzzleSize, ghostNewMmr);

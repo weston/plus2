@@ -64,6 +64,8 @@ export default function SettingsPage() {
       setProfiles(data);
       const active = data.find((p) => p.isActive);
       if (active) setActiveProfile(active);
+    }).catch(() => {
+      // Failed to load keybinding profiles; leave existing state as-is
     });
   }, [accessToken]);
 
@@ -395,11 +397,11 @@ export default function SettingsPage() {
                   className="w-full accent-blue-500"
                 />
                 <div className="flex justify-between text-sm text-gray-400 mt-2">
-                  <span>Instant</span>
-                  <span className="text-white font-medium">
-                    {animationSpeed === 0 ? 'Instant' : `${animationSpeed}x`}
-                  </span>
                   <span>Slow</span>
+                  <span className="text-white font-medium">
+                    {animationSpeed <= 0 ? 'Slowest' : animationSpeed >= 10 ? 'Fastest' : `${animationSpeed}x`}
+                  </span>
+                  <span>Fast</span>
                 </div>
               </div>
             </div>

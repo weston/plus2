@@ -47,7 +47,7 @@ async function resetDatabase() {
     const entities = dataSource.entityMetadatas;
     const tableNames = entities.map(entity => `"${entity.tableName}"`).join(', ');
 
-    if (tableNames.length === 0) {
+    if (entities.length === 0) {
       console.log('No tables found');
       await dataSource.destroy();
       return;
@@ -85,22 +85,26 @@ async function resetDatabase() {
     // We'll disable foreign key checks temporarily
     const queryRunner = dataSource.createQueryRunner();
 
-    if (dbType === 'postgres') {
-      // PostgreSQL: Use TRUNCATE CASCADE
-      for (const entity of entities) {
-        const tableName = entity.tableName;
-        console.log(`Truncating table: ${tableName}`);
-        await queryRunner.query(`TRUNCATE TABLE "${tableName}" CASCADE`);
+    try {
+      if (dbType === 'postgres') {
+        // PostgreSQL: Use TRUNCATE CASCADE
+        for (const entity of entities) {
+          const tableName = entity.tableName;
+          console.log(`Truncating table: ${tableName}`);
+          await queryRunner.query(`TRUNCATE TABLE "${tableName}" CASCADE`);
+        }
+      } else {
+        // SQLite: Disable foreign keys, delete, re-enable
+        await queryRunner.query('PRAGMA foreign_keys = OFF');
+        for (const entity of entities) {
+          const tableName = entity.tableName;
+          console.log(`Deleting from table: ${tableName}`);
+          await queryRunner.query(`DELETE FROM "${tableName}"`);
+        }
+        await queryRunner.query('PRAGMA foreign_keys = ON');
       }
-    } else {
-      // SQLite: Disable foreign keys, delete, re-enable
-      await queryRunner.query('PRAGMA foreign_keys = OFF');
-      for (const entity of entities) {
-        const tableName = entity.tableName;
-        console.log(`Deleting from table: ${tableName}`);
-        await queryRunner.query(`DELETE FROM "${tableName}"`);
-      }
-      await queryRunner.query('PRAGMA foreign_keys = ON');
+    } finally {
+      await queryRunner.release();
     }
 
     console.log('\nDatabase reset complete!');

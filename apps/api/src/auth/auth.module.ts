@@ -19,7 +19,8 @@ import { KeybindingProfile } from '../keybindings/keybinding-profile.entity';
       useFactory: (configService: ConfigService) => ({
         secret: configService.get('JWT_SECRET', 'plus2-secret-change-me'),
         signOptions: {
-          expiresIn: configService.get('JWT_EXPIRES_IN', '14d'),
+          // Short-lived access token; clients use the refresh token to renew.
+          expiresIn: configService.get('JWT_EXPIRES_IN', '15m'),
         },
       }),
     }),

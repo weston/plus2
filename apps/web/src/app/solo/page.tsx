@@ -89,9 +89,9 @@ export default function SoloPage() {
       // Only start timer if user didn't already start during inspection
       if (!timerRef.current) {
         solveStartTimeRef.current = solo.solveStartsAt;
-        setMoves([]);
-        moveSeqRef.current = 0;
-        setMoveSeq(0);
+        // NOTE: do not reset moveSeqRef/moves here — inspection rotations are
+        // already recorded (with their seq numbers) for ghost replay, so the
+        // counter must stay continuous or solve moves would reuse those seqs.
 
         let lastUpdate = 0;
         const updateTimer = (timestamp: number) => {

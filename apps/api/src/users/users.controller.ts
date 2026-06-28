@@ -148,11 +148,20 @@ export class UsersController {
       return { races: [], total: 0 };
     }
 
+    // To produce the correct combined page sorted by date, fetch the top
+    // (page * pageSize) most-recent rows from each source — that's guaranteed to
+    // contain the combined page's items — then merge, sort, and slice below.
+    const pageNum = Number(page);
+    const pageSize = 20;
+    const needed = Math.max(1, pageNum) * pageSize;
+
     // Get races where user was the racer
-    const { races: asRacer } = await this.soloService.getUserGhostRaces(id, 1, 100);
+    const { races: asRacer, total: racerTotal } =
+      await this.soloService.getUserGhostRaces(id, 1, needed);
 
     // Get races where user's ghost was used
-    const { races: asGhost } = await this.soloService.getGhostRacesAgainstUser(id, 1, 100);
+    const { races: asGhost, total: ghostTotal } =
+      await this.soloService.getGhostRacesAgainstUser(id, 1, needed);
 
     // Combine and format all races
     const allRaces = [
@@ -195,14 +204,12 @@ export class UsersController {
     allRaces.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     // Paginate
-    const pageNum = Number(page);
-    const pageSize = 20;
-    const start = (pageNum - 1) * pageSize;
+    const start = (Math.max(1, pageNum) - 1) * pageSize;
     const paginatedRaces = allRaces.slice(start, start + pageSize);
 
     return {
       races: paginatedRaces,
-      total: allRaces.length,
+      total: racerTotal + ghostTotal,
     };
   }
 

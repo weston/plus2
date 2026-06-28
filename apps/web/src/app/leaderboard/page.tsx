@@ -32,6 +32,9 @@ export default function LeaderboardPage() {
 
   useEffect(() => {
     setIsLoading(true);
+    // Guard against out-of-order responses: if the filter/page changes before a
+    // slower earlier request resolves, ignore the stale result.
+    let cancelled = false;
 
     const fetchData = selectedPuzzle === 'global'
       ? leaderboardApi.getGlobal(page)
@@ -39,10 +42,22 @@ export default function LeaderboardPage() {
 
     fetchData
       .then((data) => {
+        if (cancelled) return;
         setEntries(data.entries as LeaderboardEntry[]);
         setTotal(data.total);
       })
-      .finally(() => setIsLoading(false));
+      .catch(() => {
+        if (cancelled) return;
+        setEntries([]);
+        setTotal(0);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedPuzzle, page]);
 
   const formatTime = (ms: number | null) => {

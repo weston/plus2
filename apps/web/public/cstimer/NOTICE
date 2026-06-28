@@ -1,0 +1,31 @@
+plus2 — csTimer cube renderer (simulator mode)
+==============================================
+
+The simulator-mode cube renderer in this directory is derived from csTimer:
+
+    csTimer — Professional Speedcubing/Training Timer
+    Copyright (C) Shuang Chen (cs0x7f) and contributors
+    https://github.com/cs0x7f/cstimer
+    Licensed under the GNU General Public License v3.0 (GPL-3.0)
+
+Files in this directory:
+
+  threemin.js   — verbatim from csTimer (bundled THREE.js subset w/ CanvasRenderer)
+  pnltri.js     — verbatim from csTimer (PNLTRI polygon triangulation)
+  twistynnn.js  — verbatim from csTimer (NxN cube twisty plugin; twisty.js by
+                  Lucas Garron & Jeremy Fleischman)
+  twisty.js     — MODIFIED from csTimer: removed the jQuery dependency, the
+                  csTimer touch-input table, and the `kernel` coupling
+                  (config now comes from the CSTCFG shim in cube-glue.js).
+  cube-glue.js  — plus2-authored glue (globals shim, WCA move parsing, solve
+                  detection, factory). Also licensed GPL-3.0.
+
+IMPORTANT — LICENSING CONSEQUENCE
+---------------------------------
+GPL-3.0 is a copyleft license. Distributing/deploying plus2 with this code
+links the rest of plus2 to GPL-3.0 obligations: you must make the corresponding
+source of the combined work available under GPL-3.0 to your users. If that is
+not intended, replace this directory with a clean-room (non-GPL) renderer.
+
+A copy of the GPL-3.0 license text should accompany this notice; see
+https://www.gnu.org/licenses/gpl-3.0.txt

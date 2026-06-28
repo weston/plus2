@@ -25,6 +25,17 @@ class CustomIoAdapter extends IoAdapter {
 }
 
 async function bootstrap() {
+  // Fail fast in production if JWT secrets aren't configured, rather than
+  // silently running with the publicly-known development fallbacks (which would
+  // let anyone forge valid tokens).
+  if (process.env.NODE_ENV === 'production') {
+    for (const key of ['JWT_SECRET', 'JWT_REFRESH_SECRET']) {
+      if (!process.env[key]) {
+        throw new Error(`${key} must be set in production`);
+      }
+    }
+  }
+
   const app = await NestFactory.create(AppModule);
 
   app.enableCors({

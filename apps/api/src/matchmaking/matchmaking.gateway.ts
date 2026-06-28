@@ -1296,8 +1296,39 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         socketsExists: !!this.server?.sockets,
       });
       await this.matchesService.abandonMatch(match.id);
+
+      // findMatch already removed both players from the queue. Re-queue whichever
+      // player is still connected so they aren't silently dropped from matchmaking.
+      for (const [sock, entry] of [
+        [p1Socket, player1],
+        [p2Socket, player2],
+      ] as const) {
+        if (sock) {
+          try {
+            const { position } = await this.matchmakingService.addToQueue(
+              entry.userId,
+              sock.id,
+              puzzleSize,
+            );
+            sock.emit('queue_joined', {
+              position,
+              estimatedWait: this.matchmakingService.getEstimatedWait(puzzleSize),
+            });
+          } catch {
+            sock.emit('error', {
+              code: 'QUEUE_ERROR',
+              message: 'Failed to rejoin queue',
+            });
+          }
+        }
+      }
       return;
     }
+
+    // Both players are now committed to this match — remove them from every queue
+    // (including other puzzle sizes) so they can't be matched into a second match.
+    this.matchmakingService.removeFromQueue(player1.userId);
+    this.matchmakingService.removeFromQueue(player2.userId);
 
     // Set up match state on sockets
     p1Socket.matchId = match.id;

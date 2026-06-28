@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useImperativeHandle, forwardRef, memo } from 'react';
+import { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 import type { PuzzleSize } from '@plus2/shared';
 
 export interface TwistyCubeHandle {
@@ -14,254 +14,188 @@ interface TwistyCubeProps {
   moves?: string[];
   isInteractive?: boolean;
   onMove?: (move: string) => void;
-  animationSpeed?: number; // 1 = normal, higher = faster, 0 = instant
+  animationSpeed?: number; // higher = faster
   className?: string;
 }
 
-// Map puzzle size to cubing.js puzzle type
-type CubingPuzzle = '2x2x2' | '3x3x3' | '4x4x4' | '5x5x5';
-const puzzleMap: Record<PuzzleSize, CubingPuzzle> = {
-  '2x2': '2x2x2',
-  '3x3': '3x3x3',
-  '4x4': '4x4x4',
-  '5x5': '5x5x5',
-};
-
-// All 24 possible cube orientations
-const ORIENTATIONS = [
-  '', 'x', 'x2', "x'",
-  'y', 'y x', 'y x2', "y x'",
-  'y2', 'y2 x', 'y2 x2', "y2 x'",
-  "y'", "y' x", "y' x2", "y' x'",
-  'z', 'z x', 'z x2', "z x'",
-  "z'", "z' x", "z' x2", "z' x'"
-];
-
-// Cache for pre-computed solved patterns per puzzle size
-const solvedPatternsCache = new Map<PuzzleSize, any[]>();
-// Cache for loaded modules
-let algModule: any = null;
-let puzzlesModule: any = null;
-
-// Pre-compute solved patterns for a puzzle size
-async function getSolvedPatterns(puzzleSize: PuzzleSize): Promise<any[]> {
-  const cached = solvedPatternsCache.get(puzzleSize);
-  if (cached) return cached;
-
-  // Load modules once
-  if (!algModule) {
-    algModule = await import('cubing/alg');
-  }
-  if (!puzzlesModule) {
-    puzzlesModule = await import('cubing/puzzles');
-  }
-
-  const { Alg } = algModule;
-  const { puzzles } = puzzlesModule;
-
-  const kpuzzle = await puzzles[puzzleMap[puzzleSize]].kpuzzle();
-  const solvedState = kpuzzle.defaultPattern();
-
-  // Pre-compute all 24 rotated solved patterns
-  const patterns = ORIENTATIONS.map(orient =>
-    orient ? solvedState.applyAlg(new Alg(orient)) : solvedState
-  );
-
-  solvedPatternsCache.set(puzzleSize, patterns);
-  return patterns;
+interface CstimerCube {
+  scene: { getTwisty: () => unknown };
+  dom: HTMLElement;
+  applyMove: (token: string, animate: boolean) => void;
+  applySeq: (seq: string, animate: boolean) => void;
+  getFacelet: () => string;
+  isSolved: () => boolean;
+  resize: () => void;
+  reset: () => void;
+  setSpeed: (v: number) => void;
+  _ro?: ResizeObserver;
 }
 
-const TwistyCubeInner = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function TwistyCube({
-  puzzleSize,
-  scramble = '',
-  moves = [],
-  isInteractive = false,
-  onMove,
-  animationSpeed = 3,
-  className = '',
-}, ref) {
+declare global {
+  interface Window {
+    makeCstimerCube?: (container: HTMLElement, opts: Record<string, unknown>) => CstimerCube;
+  }
+}
+
+const SIZE_MAP: Record<PuzzleSize, number> = { '2x2': 2, '3x3': 3, '4x4': 4, '5x5': 5 };
+
+// Vendored csTimer renderer scripts (GPL-3.0 — see public/cstimer/NOTICE).
+// Order matters: libs, then twisty, then the cube plugin, then our glue.
+const SCRIPTS = [
+  '/cstimer/threemin.js',
+  '/cstimer/pnltri.js',
+  '/cstimer/twisty.js',
+  '/cstimer/twistynnn.js',
+  '/cstimer/cube-glue.js',
+];
+
+// csTimer camera orientation ("theta+6,phi+6"): straight-on (azimuth 0), top
+// tilted well back. Matches the reference: front face dead-on, symmetric side slivers.
+const ORI = '6,11';
+
+// Canvas size as a fraction of the container — leaves dark background margin around the cube.
+const FIT = 0.82;
+
+let loadPromise: Promise<void> | null = null;
+function loadCstimer(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve();
+  if (window.makeCstimerCube) return Promise.resolve();
+  if (loadPromise) return loadPromise;
+
+  loadPromise = SCRIPTS.reduce(
+    (p, src) =>
+      p.then(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            const existing = document.querySelector<HTMLScriptElement>(`script[data-cst="${src}"]`);
+            if (existing) {
+              if (existing.dataset.loaded) return resolve();
+              existing.addEventListener('load', () => resolve());
+              existing.addEventListener('error', () => reject(new Error(`load ${src}`)));
+              return;
+            }
+            const s = document.createElement('script');
+            s.src = src;
+            s.async = false;
+            s.dataset.cst = src;
+            s.addEventListener('load', () => {
+              s.dataset.loaded = '1';
+              resolve();
+            });
+            s.addEventListener('error', () => reject(new Error(`load ${src}`)));
+            document.head.appendChild(s);
+          }),
+      ),
+    Promise.resolve(),
+  );
+  return loadPromise;
+}
+
+function speedToVrc(speed: number): number {
+  const s = Math.min(12, Math.max(0.5, speed || 1));
+  return Math.min(1000, Math.max(30, Math.round(330 / s)));
+}
+
+export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function TwistyCube(
+  { puzzleSize, scramble = '', moves = [], animationSpeed = 3, className = '' },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const playerRef = useRef<any>(null);
-  const lastMoveCount = useRef(0);
-  const animationSpeedRef = useRef(animationSpeed);
+  const cubeRef = useRef<CstimerCube | null>(null);
+  const appliedRef = useRef(0);
+  const speedRef = useRef(animationSpeed);
+
+  const N = SIZE_MAP[puzzleSize] ?? 3;
+  const movesSig = moves.join(' ');
 
   useEffect(() => {
-    animationSpeedRef.current = animationSpeed;
-    // Update tempo on existing player
-    if (playerRef.current) {
-      playerRef.current.tempoScale = animationSpeed;
-    }
+    speedRef.current = animationSpeed;
+    cubeRef.current?.setSpeed(speedToVrc(animationSpeed));
   }, [animationSpeed]);
 
-  // Imperative method to apply a single move (avoids re-renders)
-  const applyMoveImperative = async (moveStr: string) => {
-    try {
-      const player = playerRef.current;
-      if (!player) return;
-
-      if (!algModule) {
-        algModule = await import('cubing/alg');
-      }
-      const { Alg } = algModule;
-      const alg = new Alg(moveStr);
-      for (const move of alg.units()) {
-        player.experimentalAddMove(move);
-        break;
-      }
-      // Increment lastMoveCount so useEffect doesn't re-apply this move
-      lastMoveCount.current += 1;
-    } catch (e) {
-      console.error('Failed to apply move:', e);
-    }
-  };
-
-  // Expose methods to parent components
-  useImperativeHandle(ref, () => ({
-    checkSolved: async () => {
-      try {
-        const player = playerRef.current;
-        if (!player) return false;
-
-        // Get current state from the player
-        const currentPattern = await player.experimentalModel.currentPattern.get();
-
-        // Get pre-computed solved patterns (cached after first call)
-        const solvedPatterns = await getSolvedPatterns(puzzleSize);
-
-        // Check if current pattern matches any of the 24 solved orientations
-        for (const rotatedSolved of solvedPatterns) {
-          if (currentPattern.isIdentical(rotatedSolved)) {
-            return true;
-          }
-        }
-        return false;
-      } catch (e) {
-        console.error('Solve check error:', e);
-        return false;
-      }
-    },
-    applyMove: applyMoveImperative,
-  }), [puzzleSize]);
-
-  // Initialize cube
+  // Build (or rebuild) the cube on size/scramble change.
   useEffect(() => {
-    if (!containerRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
+    let cancelled = false;
 
-    // Dynamic import of cubing.js
-    import('cubing/twisty').then(({ TwistyPlayer }) => {
-      // Clear previous player
-      if (playerRef.current) {
-        playerRef.current.remove();
-      }
-      containerRef.current!.innerHTML = '';
+    loadCstimer()
+      .then(() => {
+        if (cancelled || !container || !window.makeCstimerCube) return;
+        container.innerHTML = '';
+        const cube = window.makeCstimerCube(container, {
+          dimension: N,
+          speed: speedToVrc(speedRef.current),
+          ori: ORI,
+          fit: FIT,
+        });
+        // Center the square canvas within the container.
+        cube.dom.style.display = 'flex';
+        cube.dom.style.alignItems = 'center';
+        cube.dom.style.justifyContent = 'center';
 
-      const player = new TwistyPlayer({
-        puzzle: puzzleMap[puzzleSize],
-        experimentalSetupAlg: scramble, // Setup alg doesn't animate
-        alg: '', // Start with empty alg for moves
-        hintFacelets: 'floating',
-        backView: 'none',
-        background: 'none',
-        controlPanel: 'none',
-        visualization: '3D',
-        tempoScale: animationSpeedRef.current,
-        experimentalStickering: 'full',
-      } as any);
+        appliedRef.current = 0;
+        if (scramble) cube.applySeq(scramble, false);
+        for (const m of moves) cube.applyMove(m, false);
+        appliedRef.current = moves.length;
 
-
-
-      player.style.width = '100%';
-      player.style.height = '100%';
-
-      containerRef.current!.appendChild(player);
-      playerRef.current = player;
-      lastMoveCount.current = 0;
-
-      // Pre-warm the solved patterns cache in the background
-      getSolvedPatterns(puzzleSize);
-
-      // Set camera position and enable drag after player is fully ready
-      (async () => {
-        try {
-          // Wait for the scene to be ready
-          await player.experimentalModel.twistySceneModel.orbitCoordinates.get();
-
-          // Set camera position - front face with top visible
-          player.experimentalModel.twistySceneModel.orbitCoordinatesRequest.set({
-            latitude: 35,
-            longitude: 1,
-            distance: 6,
-          });
-
-          // Disable drag input - cube orientation must be fixed
-          player.experimentalModel.twistySceneModel.dragInput.set('none');
-        } catch (e) {
-          // Camera setup failed, use defaults
-        }
-      })();
-    });
+        cube.resize();
+        const ro = new ResizeObserver(() => cube.resize());
+        ro.observe(container);
+        cube._ro = ro;
+        cubeRef.current = cube;
+      })
+      .catch(() => {
+        /* script load failed; nothing rendered */
+      });
 
     return () => {
-      if (playerRef.current) {
-        playerRef.current.remove();
-        playerRef.current = null;
-      }
+      cancelled = true;
+      cubeRef.current?._ro?.disconnect();
+      cubeRef.current = null;
+      if (container) container.innerHTML = '';
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [puzzleSize, scramble]);
 
-  // Apply new moves (solve checking is done on demand via ref)
+  // React to the declarative `moves` prop (opponent / replay / ghost).
   useEffect(() => {
-    if (!playerRef.current || moves.length === 0) return;
+    const cube = cubeRef.current;
+    if (!cube) return;
 
-    // Only apply new moves
-    const newMoves = moves.slice(lastMoveCount.current);
-    if (newMoves.length === 0) return;
+    if (moves.length < appliedRef.current) {
+      // Rewind: reset to solved, replay scramble + remaining moves instantly.
+      cube.reset();
+      if (scramble) cube.applySeq(scramble, false);
+      for (let i = 0; i < moves.length; i++) cube.applyMove(moves[i], false);
+      appliedRef.current = moves.length;
+    } else if (moves.length > appliedRef.current) {
+      // New moves to play forward (interactive cubes already advanced via applyMove).
+      for (let i = appliedRef.current; i < moves.length; i++) cube.applyMove(moves[i], true);
+      appliedRef.current = moves.length;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [movesSig]);
 
-    const applyMoves = async () => {
-      try {
-        // Use cached module if available, otherwise load it
-        if (!algModule) {
-          algModule = await import('cubing/alg');
-        }
-        const { Alg } = algModule;
-        const player = playerRef.current;
-
-        // Add each move with animation
-        for (const moveStr of newMoves) {
-          const alg = new Alg(moveStr);
-          // Get the first unit from the alg (it's an iterable)
-          for (const move of alg.units()) {
-            player.experimentalAddMove(move);
-            break; // Only take the first move
-          }
-        }
-        lastMoveCount.current = moves.length;
-      } catch (e) {
-        console.error('Failed to apply moves:', e);
-      }
-    };
-
-    applyMoves();
-  }, [moves]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      checkSolved: async () => (cubeRef.current ? cubeRef.current.isSolved() : false),
+      applyMove: (move: string) => {
+        const cube = cubeRef.current;
+        if (!cube) return;
+        appliedRef.current += 1; // keep the moves effect from replaying this move
+        cube.applyMove(move, true);
+      },
+    }),
+    [],
+  );
 
   return (
     <div
       ref={containerRef}
       className={`cube-container ${className}`}
-      style={{ minHeight: '400px' }}
+      style={{ position: 'relative', width: '100%' }}
     />
   );
-});
-
-// Memoize to prevent re-renders when moves array reference changes but content is same
-export const TwistyCube = memo(TwistyCubeInner, (prevProps, nextProps) => {
-  // Only re-render if these props actually change
-  if (prevProps.puzzleSize !== nextProps.puzzleSize) return false;
-  if (prevProps.scramble !== nextProps.scramble) return false;
-  if (prevProps.animationSpeed !== nextProps.animationSpeed) return false;
-  if (prevProps.className !== nextProps.className) return false;
-  if (prevProps.isInteractive !== nextProps.isInteractive) return false;
-  // For moves, compare length - the component handles incremental updates internally
-  if (prevProps.moves?.length !== nextProps.moves?.length) return false;
-  return true;
 });

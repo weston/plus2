@@ -65,6 +65,56 @@ export class MatchesService {
     private usersService: UsersService,
   ) {}
 
+  // Per-key serialization so concurrent read-modify-write operations on the same
+  // match/round (rapid moves, simultaneous solve completions) don't lose updates.
+  private locks = new Map<string, Promise<unknown>>();
+
+  private withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(key) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    this.locks.set(key, run);
+    // Clean up once this is the tail of the chain to avoid unbounded growth.
+    run.catch(() => {}).finally(() => {
+      if (this.locks.get(key) === run) this.locks.delete(key);
+    });
+    return run;
+  }
+
+  // Decide the round winner from both players' terminal states (completed/dnf)
+  // and bump the match score. A completed solve beats a DNF; faster time wins
+  // when both completed; both-DNF or equal time is a draw (no score change).
+  private resolveRoundWinner(solve: Solve, match: Match): void {
+    const p1Completed = solve.p1Status === 'completed';
+    const p2Completed = solve.p2Status === 'completed';
+
+    if (p1Completed && p2Completed) {
+      if (solve.p1TimeMs! < solve.p2TimeMs!) {
+        solve.p1IsWinner = true;
+        solve.p2IsWinner = false;
+        match.player1Score += 1;
+      } else if (solve.p2TimeMs! < solve.p1TimeMs!) {
+        solve.p1IsWinner = false;
+        solve.p2IsWinner = true;
+        match.player2Score += 1;
+      } else {
+        solve.p1IsWinner = false;
+        solve.p2IsWinner = false; // draw
+      }
+    } else if (p1Completed && !p2Completed) {
+      solve.p1IsWinner = true;
+      solve.p2IsWinner = false;
+      match.player1Score += 1;
+    } else if (p2Completed && !p1Completed) {
+      solve.p1IsWinner = false;
+      solve.p2IsWinner = true;
+      match.player2Score += 1;
+    } else {
+      // both DNF — no winner
+      solve.p1IsWinner = false;
+      solve.p2IsWinner = false;
+    }
+  }
+
   async createMatch(
     player1Id: string,
     player2Id: string,
@@ -127,44 +177,35 @@ export class MatchesService {
   ): Promise<void> {
     const match = await this.getMatch(matchId);
     const isPlayer1 = match.player1Id === userId;
-    const moveJson = JSON.stringify([move]);
 
-    // Use atomic update to prevent race condition when moves arrive quickly
-    // Each player's moves are in separate columns, so they don't conflict with each other
-    // But rapid moves from the same player could still race without atomic update
-    if (isPlayer1) {
-      await this.solveRepository
-        .createQueryBuilder()
-        .update()
-        .set({
-          p1Moves: () => `p1_moves || :moveJson::jsonb`,
-          p1MoveCount: () => 'p1_move_count + 1',
-          p1Status: 'solving',
-          p1SolveStartAt: () => 'COALESCE(p1_solve_start_at, NOW())',
-        })
-        .where('match_id = :matchId AND round_number = :roundNumber', {
-          matchId,
-          roundNumber,
-        })
-        .setParameter('moveJson', moveJson)
-        .execute();
-    } else {
-      await this.solveRepository
-        .createQueryBuilder()
-        .update()
-        .set({
-          p2Moves: () => `p2_moves || :moveJson::jsonb`,
-          p2MoveCount: () => 'p2_move_count + 1',
-          p2Status: 'solving',
-          p2SolveStartAt: () => 'COALESCE(p2_solve_start_at, NOW())',
-        })
-        .where('match_id = :matchId AND round_number = :roundNumber', {
-          matchId,
-          roundNumber,
-        })
-        .setParameter('moveJson', moveJson)
-        .execute();
-    }
+    // Append the move via a serialized read-modify-write. The columns are
+    // `simple-json` (text), so the previous `|| ::jsonb` SQL was invalid on
+    // both sqlite and postgres; the per-(match,round,player) lock keeps rapid
+    // moves from clobbering each other.
+    await this.withLock(`move:${matchId}:${roundNumber}:${isPlayer1 ? 1 : 2}`, async () => {
+      const solve = await this.solveRepository.findOne({
+        where: { matchId, roundNumber },
+      });
+      if (!solve) return;
+
+      const now = new Date();
+      if (isPlayer1) {
+        const moves = Array.isArray(solve.p1Moves) ? solve.p1Moves : [];
+        moves.push(move);
+        solve.p1Moves = moves;
+        solve.p1MoveCount = moves.length;
+        solve.p1Status = 'solving';
+        if (!solve.p1SolveStartAt) solve.p1SolveStartAt = now;
+      } else {
+        const moves = Array.isArray(solve.p2Moves) ? solve.p2Moves : [];
+        moves.push(move);
+        solve.p2Moves = moves;
+        solve.p2MoveCount = moves.length;
+        solve.p2Status = 'solving';
+        if (!solve.p2SolveStartAt) solve.p2SolveStartAt = now;
+      }
+      await this.solveRepository.save(solve);
+    });
   }
 
   async recordSolveComplete(
@@ -181,94 +222,97 @@ export class MatchesService {
     scores: { p1: number; p2: number };
     matchComplete: boolean;
   } | null> {
-    const match = await this.getMatch(matchId);
-    const solve = await this.solveRepository.findOne({
-      where: { matchId, roundNumber },
-    });
+    // Serialize per match so simultaneous completions (or a completion racing a
+    // DNF) can't both read a stale state and leave the round unresolved.
+    return this.withLock(`round:${matchId}`, async () => {
+      const match = await this.getMatch(matchId);
+      const solve = await this.solveRepository.findOne({
+        where: { matchId, roundNumber },
+      });
 
-    if (!solve) return null;
+      if (!solve) return null;
 
-    const isPlayer1 = match.player1Id === userId;
-    const now = new Date();
+      const isPlayer1 = match.player1Id === userId;
+      const now = new Date();
 
-    if (isPlayer1) {
-      solve.p1Status = 'completed';
-      solve.p1SolveEndAt = now;
-      // Use client-calculated time if provided, otherwise fall back to server calculation
-      solve.p1TimeMs = clientTimeMs != null
-        ? clientTimeMs
-        : (solve.p1SolveStartAt ? now.getTime() - solve.p1SolveStartAt.getTime() : 0);
-    } else {
-      solve.p2Status = 'completed';
-      solve.p2SolveEndAt = now;
-      // Use client-calculated time if provided, otherwise fall back to server calculation
-      solve.p2TimeMs = clientTimeMs != null
-        ? clientTimeMs
-        : (solve.p2SolveStartAt ? now.getTime() - solve.p2SolveStartAt.getTime() : 0);
-    }
-
-    const timeMs = isPlayer1 ? solve.p1TimeMs! : solve.p2TimeMs!;
-
-    // Check if round is complete
-    const roundComplete =
-      solve.p1Status === 'completed' && solve.p2Status === 'completed';
-
-    if (roundComplete) {
-      // Determine winner
-      if (solve.p1TimeMs! < solve.p2TimeMs!) {
-        solve.p1IsWinner = true;
-        solve.p2IsWinner = false;
-        match.player1Score += 1;
-      } else if (solve.p2TimeMs! < solve.p1TimeMs!) {
-        solve.p1IsWinner = false;
-        solve.p2IsWinner = true;
-        match.player2Score += 1;
+      if (isPlayer1) {
+        solve.p1Status = 'completed';
+        solve.p1SolveEndAt = now;
+        // Use client-calculated time if provided, otherwise fall back to server calculation
+        solve.p1TimeMs = clientTimeMs != null
+          ? clientTimeMs
+          : (solve.p1SolveStartAt ? now.getTime() - solve.p1SolveStartAt.getTime() : 0);
       } else {
-        // Draw - rare but possible
-        solve.p1IsWinner = false;
-        solve.p2IsWinner = false;
+        solve.p2Status = 'completed';
+        solve.p2SolveEndAt = now;
+        // Use client-calculated time if provided, otherwise fall back to server calculation
+        solve.p2TimeMs = clientTimeMs != null
+          ? clientTimeMs
+          : (solve.p2SolveStartAt ? now.getTime() - solve.p2SolveStartAt.getTime() : 0);
       }
 
-      await this.matchRepository.save(match);
+      const timeMs = isPlayer1 ? solve.p1TimeMs! : solve.p2TimeMs!;
 
-      // Update solve stats
-      await Promise.all([
-        this.usersService.incrementSolveStats(
-          match.player1Id,
-          match.puzzleSize,
-          solve.p1IsWinner || false,
-          solve.p1TimeMs!,
-        ),
-        this.usersService.incrementSolveStats(
-          match.player2Id,
-          match.puzzleSize,
-          solve.p2IsWinner || false,
-          solve.p2TimeMs!,
-        ),
-      ]);
-    }
+      // Round is complete once both players reached a terminal state. This must
+      // include the opponent having DNF'd before this completion, otherwise the
+      // round would hang forever.
+      const roundComplete =
+        (solve.p1Status === 'completed' || solve.p1Status === 'dnf') &&
+        (solve.p2Status === 'completed' || solve.p2Status === 'dnf');
 
-    await this.solveRepository.save(solve);
+      if (roundComplete) {
+        this.resolveRoundWinner(solve, match);
 
-    // Check if match is complete
-    const matchComplete =
-      match.player1Score >= WINS_NEEDED || match.player2Score >= WINS_NEEDED;
+        await this.matchRepository.save(match);
 
-    return {
-      timeMs,
-      roundComplete,
-      p1Time: solve.p1TimeMs,
-      p2Time: solve.p2TimeMs,
-      winner: roundComplete
-        ? solve.p1IsWinner
-          ? 'p1'
-          : solve.p2IsWinner
-            ? 'p2'
-            : 'draw'
-        : null,
-      scores: { p1: match.player1Score, p2: match.player2Score },
-      matchComplete,
-    };
+        // Update solve stats only for players who actually completed (a DNF has
+        // a null time, which would corrupt the average).
+        const statUpdates: Promise<void>[] = [];
+        if (solve.p1Status === 'completed') {
+          statUpdates.push(
+            this.usersService.incrementSolveStats(
+              match.player1Id,
+              match.puzzleSize,
+              solve.p1IsWinner || false,
+              solve.p1TimeMs!,
+            ),
+          );
+        }
+        if (solve.p2Status === 'completed') {
+          statUpdates.push(
+            this.usersService.incrementSolveStats(
+              match.player2Id,
+              match.puzzleSize,
+              solve.p2IsWinner || false,
+              solve.p2TimeMs!,
+            ),
+          );
+        }
+        await Promise.all(statUpdates);
+      }
+
+      await this.solveRepository.save(solve);
+
+      // Check if match is complete
+      const matchComplete =
+        match.player1Score >= WINS_NEEDED || match.player2Score >= WINS_NEEDED;
+
+      return {
+        timeMs,
+        roundComplete,
+        p1Time: solve.p1TimeMs,
+        p2Time: solve.p2TimeMs,
+        winner: roundComplete
+          ? solve.p1IsWinner
+            ? 'p1'
+            : solve.p2IsWinner
+              ? 'p2'
+              : 'draw'
+          : null,
+        scores: { p1: match.player1Score, p2: match.player2Score },
+        matchComplete,
+      };
+    });
   }
 
   async completeMatch(matchId: string): Promise<{
@@ -446,77 +490,54 @@ export class MatchesService {
     scores: { p1: number; p2: number };
     matchComplete: boolean;
   } | null> {
-    const match = await this.getMatch(matchId);
-    const solve = await this.solveRepository.findOne({
-      where: { matchId, roundNumber },
-    });
+    return this.withLock(`round:${matchId}`, async () => {
+      const match = await this.getMatch(matchId);
+      const solve = await this.solveRepository.findOne({
+        where: { matchId, roundNumber },
+      });
 
-    if (!solve) return null;
+      if (!solve) return null;
 
-    const isPlayer1 = match.player1Id === userId;
+      const isPlayer1 = match.player1Id === userId;
 
-    if (isPlayer1) {
-      solve.p1Status = 'dnf';
-      solve.p1TimeMs = null;
-    } else {
-      solve.p2Status = 'dnf';
-      solve.p2TimeMs = null;
-    }
-
-    // Check if round is complete
-    const roundComplete =
-      (solve.p1Status === 'completed' || solve.p1Status === 'dnf') &&
-      (solve.p2Status === 'completed' || solve.p2Status === 'dnf');
-
-    if (roundComplete) {
-      // Determine winner - DNF loses to any completed time
-      const p1Completed = solve.p1Status === 'completed';
-      const p2Completed = solve.p2Status === 'completed';
-
-      if (p1Completed && !p2Completed) {
-        solve.p1IsWinner = true;
-        solve.p2IsWinner = false;
-        match.player1Score += 1;
-      } else if (p2Completed && !p1Completed) {
-        solve.p1IsWinner = false;
-        solve.p2IsWinner = true;
-        match.player2Score += 1;
-      } else if (p1Completed && p2Completed) {
-        // Both completed - compare times
-        if (solve.p1TimeMs! < solve.p2TimeMs!) {
-          solve.p1IsWinner = true;
-          solve.p2IsWinner = false;
-          match.player1Score += 1;
-        } else if (solve.p2TimeMs! < solve.p1TimeMs!) {
-          solve.p1IsWinner = false;
-          solve.p2IsWinner = true;
-          match.player2Score += 1;
-        }
+      if (isPlayer1) {
+        solve.p1Status = 'dnf';
+        solve.p1TimeMs = null;
+      } else {
+        solve.p2Status = 'dnf';
+        solve.p2TimeMs = null;
       }
-      // If both DNF, no one wins the round
 
-      await this.matchRepository.save(match);
-    }
+      // Check if round is complete
+      const roundComplete =
+        (solve.p1Status === 'completed' || solve.p1Status === 'dnf') &&
+        (solve.p2Status === 'completed' || solve.p2Status === 'dnf');
 
-    await this.solveRepository.save(solve);
+      if (roundComplete) {
+        this.resolveRoundWinner(solve, match);
+        await this.matchRepository.save(match);
+      }
 
-    const matchComplete =
-      match.player1Score >= WINS_NEEDED || match.player2Score >= WINS_NEEDED;
+      await this.solveRepository.save(solve);
 
-    return {
-      roundComplete,
-      p1Time: solve.p1TimeMs,
-      p2Time: solve.p2TimeMs,
-      winner: roundComplete
-        ? solve.p1IsWinner
-          ? 'p1'
-          : solve.p2IsWinner
-            ? 'p2'
-            : 'draw'
-        : null,
-      scores: { p1: match.player1Score, p2: match.player2Score },
-      matchComplete,
-    };
+      const matchComplete =
+        match.player1Score >= WINS_NEEDED || match.player2Score >= WINS_NEEDED;
+
+      return {
+        roundComplete,
+        p1Time: solve.p1TimeMs,
+        p2Time: solve.p2TimeMs,
+        winner: roundComplete
+          ? solve.p1IsWinner
+            ? 'p1'
+            : solve.p2IsWinner
+              ? 'p2'
+              : 'draw'
+          : null,
+        scores: { p1: match.player1Score, p2: match.player2Score },
+        matchComplete,
+      };
+    });
   }
 
   async getUserMatches(

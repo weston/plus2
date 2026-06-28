@@ -22,6 +22,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!user) {
       throw new UnauthorizedException();
     }
-    return user;
+    // Strip sensitive fields so they never end up on `req.user` (and thus can't
+    // leak into a response if a handler ever returns the user object).
+    const { passwordHash, ...safeUser } = user;
+    return safeUser;
   }
 }

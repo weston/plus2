@@ -33,61 +33,69 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
-    // Check if email exists
-    const existingEmail = await this.userRepository.findOne({
-      where: { email: dto.email.toLowerCase() },
-    });
-    if (existingEmail) {
-      throw new ConflictException('Email already registered');
-    }
-
-    // Check if username exists
-    const existingUsername = await this.userRepository.findOne({
-      where: { username: dto.username },
-    });
-    if (existingUsername) {
-      throw new ConflictException('Username already taken');
-    }
-
-    // Validate username format
+    // Validate username format first
     if (!/^[a-zA-Z0-9_]{3,32}$/.test(dto.username)) {
       throw new BadRequestException(
         'Username must be 3-32 characters and contain only letters, numbers, and underscores',
       );
     }
 
+    const email = dto.email.toLowerCase();
+
+    // Check if email exists
+    const existingEmail = await this.userRepository.findOne({ where: { email } });
+    if (existingEmail) {
+      throw new ConflictException('Email already registered');
+    }
+
+    // Check if username exists (case-insensitive, so "Bob" and "bob" can't coexist)
+    const existingUsername = await this.userRepository
+      .createQueryBuilder('user')
+      .where('LOWER(user.username) = LOWER(:username)', { username: dto.username })
+      .getOne();
+    if (existingUsername) {
+      throw new ConflictException('Username already taken');
+    }
+
     // Hash password
     const passwordHash = await bcrypt.hash(dto.password, 12);
 
-    // Create user
-    const user = this.userRepository.create({
-      email: dto.email.toLowerCase(),
-      username: dto.username,
-      passwordHash,
-    });
+    // Create the user, puzzle stats and default keybinding profile atomically.
+    // A failure can't leave an orphaned user row, and a lost race on the unique
+    // constraint surfaces as a ConflictException rather than a raw 500.
+    let user: User;
+    try {
+      user = await this.userRepository.manager.transaction(async (manager) => {
+        const created = await manager.save(
+          manager.create(User, { email, username: dto.username, passwordHash }),
+        );
 
-    await this.userRepository.save(user);
+        await Promise.all(
+          PUZZLE_SIZES.map((size) =>
+            manager.save(
+              manager.create(UserPuzzleStats, { userId: created.id, puzzleSize: size }),
+            ),
+          ),
+        );
 
-    // Create puzzle stats for each size
-    const statsPromises = PUZZLE_SIZES.map((size) =>
-      this.statsRepository.save(
-        this.statsRepository.create({
-          userId: user.id,
-          puzzleSize: size,
-        }),
-      ),
-    );
-    await Promise.all(statsPromises);
+        await manager.save(
+          manager.create(KeybindingProfile, {
+            userId: created.id,
+            name: 'Default',
+            isActive: true,
+            bindings: DEFAULT_KEYBINDINGS,
+          }),
+        );
 
-    // Create default keybinding profile
-    await this.keybindingsRepository.save(
-      this.keybindingsRepository.create({
-        userId: user.id,
-        name: 'Default',
-        isActive: true,
-        bindings: DEFAULT_KEYBINDINGS,
-      }),
-    );
+        return created;
+      });
+    } catch (err: any) {
+      // Postgres unique_violation = 23505; sqlite/better-sqlite3 reports SQLITE_CONSTRAINT
+      if (err?.code === '23505' || /unique/i.test(err?.message ?? '')) {
+        throw new ConflictException('Email or username already taken');
+      }
+      throw err;
+    }
 
     // Generate tokens
     const tokens = this.generateTokens(user);

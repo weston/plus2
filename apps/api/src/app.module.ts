@@ -30,7 +30,7 @@ import { SoloModule } from './solo/solo.module';
             entities: [__dirname + '/**/*.entity{.ts,.js}'],
             migrations: [__dirname + '/database/migrations/*{.ts,.js}'],
             migrationsRun: true, // Auto-run migrations on startup
-            synchronize: true,
+            synchronize: !isProd,
             logging: configService.get('NODE_ENV') === 'development',
           };
         }

@@ -1,3 +1,5 @@
+import { useAuthStore } from '../stores/auth';
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 
 interface RequestOptions {
@@ -6,22 +8,71 @@ interface RequestOptions {
   token?: string | null;
 }
 
+// Single in-flight refresh shared across concurrent 401s, so a burst of expired
+// requests triggers exactly one refresh instead of a stampede.
+let refreshPromise: Promise<string | null> | null = null;
+
+async function refreshAccessToken(): Promise<string | null> {
+  const { refreshToken } = useAuthStore.getState();
+  if (!refreshToken) return null;
+
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      try {
+        const res = await fetch(`${API_URL}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+        });
+        if (!res.ok) throw new Error('Refresh failed');
+        const data = (await res.json()) as {
+          accessToken: string;
+          refreshToken: string;
+        };
+        useAuthStore.setState({
+          accessToken: data.accessToken,
+          refreshToken: data.refreshToken,
+        });
+        return data.accessToken;
+      } catch {
+        // Refresh token is invalid/expired — clear the session.
+        useAuthStore.getState().logout();
+        return null;
+      } finally {
+        refreshPromise = null;
+      }
+    })();
+  }
+
+  return refreshPromise;
+}
+
 async function request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, token } = options;
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+  const doFetch = (authToken?: string | null) => {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    return fetch(`${API_URL}${endpoint}`, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
   };
 
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
+  let response = await doFetch(token);
 
-  const response = await fetch(`${API_URL}${endpoint}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  // If the access token expired, transparently refresh once and retry.
+  if (response.status === 401 && token) {
+    const newToken = await refreshAccessToken();
+    if (newToken) {
+      response = await doFetch(newToken);
+    }
+  }
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Request failed' }));

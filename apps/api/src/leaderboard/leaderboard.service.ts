@@ -39,12 +39,15 @@ export class LeaderboardService {
       .take(limit)
       .getManyAndCount();
 
-    // Get stats for these users
+    // Get stats for these users (skip the query entirely when the page is empty,
+    // since `IN (:...[])` produces invalid SQL).
     const userIds = users.map((u) => u.id);
-    const allStats = await this.statsRepository
-      .createQueryBuilder('stats')
-      .where('stats.userId IN (:...userIds)', { userIds })
-      .getMany();
+    const allStats = userIds.length
+      ? await this.statsRepository
+          .createQueryBuilder('stats')
+          .where('stats.userId IN (:...userIds)', { userIds })
+          .getMany()
+      : [];
 
     const statsMap = new Map<string, UserPuzzleStats[]>();
     for (const stat of allStats) {

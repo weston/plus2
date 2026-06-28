@@ -44,6 +44,9 @@ export default function DashboardPage() {
 
     usersApi.getMe(accessToken).then((data) => {
       setStats(data.stats as Stats[]);
+    }).catch(() => {
+      // Leave stats empty on failure rather than throwing an unhandled rejection
+      setStats([]);
     });
 
     matchesApi.getGhostRaces(accessToken).then((data) => {
