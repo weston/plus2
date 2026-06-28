@@ -35,6 +35,34 @@ variable "jwt_secret" {
   sensitive   = true
 }
 
+# OAuth credentials (optional — empty = that provider stays disabled / returns 503).
+# Set the real values in terraform.tfvars (gitignored) or via TF_VAR_*.
+variable "google_client_id" {
+  description = "Google OAuth client ID"
+  type        = string
+  default     = ""
+}
+
+variable "google_client_secret" {
+  description = "Google OAuth client secret"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "wca_client_id" {
+  description = "WCA OAuth application UID"
+  type        = string
+  default     = ""
+}
+
+variable "wca_client_secret" {
+  description = "WCA OAuth application secret"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "api_image_tag" {
   description = "Docker image tag for API"
   type        = string

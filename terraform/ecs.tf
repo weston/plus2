@@ -97,6 +97,36 @@ resource "aws_ecs_task_definition" "api" {
         {
           name  = "JWT_EXPIRES_IN"
           value = "14d"
+        },
+        # OAuth / SSO (see SSO_WCA_SETUP.md). Empty creds => that provider stays
+        # disabled and its routes return 503 (no crash).
+        {
+          name  = "WEB_URL"
+          value = "https://plus2.me"
+        },
+        {
+          name  = "GOOGLE_CLIENT_ID"
+          value = var.google_client_id
+        },
+        {
+          name  = "GOOGLE_CLIENT_SECRET"
+          value = var.google_client_secret
+        },
+        {
+          name  = "GOOGLE_CALLBACK_URL"
+          value = "https://api.plus2.me/api/auth/google/callback"
+        },
+        {
+          name  = "WCA_CLIENT_ID"
+          value = var.wca_client_id
+        },
+        {
+          name  = "WCA_CLIENT_SECRET"
+          value = var.wca_client_secret
+        },
+        {
+          name  = "WCA_CALLBACK_URL"
+          value = "https://api.plus2.me/api/auth/wca/callback"
         }
       ]
 
