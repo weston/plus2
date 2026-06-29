@@ -160,9 +160,25 @@ export class AuthService {
     return this.userRepository.findOne({ where: { id: payload.sub } });
   }
 
+  // Set the provider-specific identity column on a user (and keep the legacy
+  // single-provider fields pointed at the most recent provider for back-compat).
+  private applyIdentity(
+    user: User,
+    params: { provider: string; oauthId: string; wcaId?: string | null },
+  ) {
+    if (params.provider === 'google') {
+      user.googleId = params.oauthId;
+    } else if (params.provider === 'wca') {
+      user.wcaOauthId = params.oauthId;
+      if (params.wcaId) user.wcaId = params.wcaId;
+    }
+    user.oauthProvider = params.provider;
+    user.oauthId = params.oauthId;
+  }
+
   /**
-   * Find-or-create a user from an OAuth provider profile (e.g. Google SSO),
-   * then issue tokens. Links to an existing account by provider id, else email.
+   * Find-or-create a user from an OAuth provider profile, then issue tokens.
+   * Resolves by the provider-specific id, else by email (auto-link), else creates.
    */
   async oauthLogin(params: {
     provider: string;
@@ -172,23 +188,23 @@ export class AuthService {
     wcaId?: string | null;
   }) {
     const email = params.email.toLowerCase();
+    const idField = params.provider === 'google' ? 'googleId' : 'wcaOauthId';
 
-    // 1. Existing OAuth link
+    // 1. Existing identity link
     let user = await this.userRepository.findOne({
-      where: { oauthProvider: params.provider, oauthId: params.oauthId },
+      where: { [idField]: params.oauthId } as any,
     });
 
-    // 2. Existing local account with the same email — link it
+    // 2. Existing account with the same email — auto-link this provider to it
     if (!user) {
       user = await this.userRepository.findOne({ where: { email } });
       if (user) {
-        user.oauthProvider = params.provider;
-        user.oauthId = params.oauthId;
+        this.applyIdentity(user, params);
         await this.userRepository.save(user);
       }
     }
 
-    // 3. Brand new account (with default stats + keybindings, like register)
+    // 3. Brand new account (with default stats + keybindings)
     if (!user) {
       const username = await this.generateUniqueUsername(params.name || email.split('@')[0]);
       user = await this.userRepository.manager.transaction(async (manager) => {
@@ -197,6 +213,9 @@ export class AuthService {
             email,
             username,
             passwordHash: null,
+            googleId: params.provider === 'google' ? params.oauthId : null,
+            wcaOauthId: params.provider === 'wca' ? params.oauthId : null,
+            wcaId: params.provider === 'wca' ? params.wcaId ?? null : null,
             oauthProvider: params.provider,
             oauthId: params.oauthId,
           }),
@@ -223,6 +242,45 @@ export class AuthService {
     await this.userRepository.save(user);
 
     return { ...this.generateTokens(user), user: this.sanitizeUser(user) };
+  }
+
+  /**
+   * Attach a provider identity to the CURRENT (already-logged-in) account.
+   * Errors if that identity is already linked to a different account.
+   */
+  async linkOauth(
+    userId: string,
+    params: { provider: string; oauthId: string; wcaId?: string | null },
+  ): Promise<User> {
+    const idField = params.provider === 'google' ? 'googleId' : 'wcaOauthId';
+    const existing = await this.userRepository.findOne({
+      where: { [idField]: params.oauthId } as any,
+    });
+    if (existing && existing.id !== userId) {
+      throw new ConflictException(
+        `That ${params.provider === 'google' ? 'Google' : 'WCA'} account is already linked to another user.`,
+      );
+    }
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException('User not found');
+    this.applyIdentity(user, params);
+    await this.userRepository.save(user);
+    return user;
+  }
+
+  /** Short-lived token that carries the current user through a link OAuth round-trip. */
+  mintLinkToken(userId: string): string {
+    return this.jwtService.sign({ sub: userId, link: true }, { expiresIn: '10m' });
+  }
+
+  verifyLinkToken(token: string): string | null {
+    try {
+      const payload = this.jwtService.verify(token) as { sub?: string; link?: boolean };
+      if (payload?.link === true && payload.sub) return payload.sub;
+    } catch {
+      /* invalid/expired */
+    }
+    return null;
   }
 
   private async generateUniqueUsername(base: string): Promise<string> {

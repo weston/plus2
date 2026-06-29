@@ -46,13 +46,25 @@ export class User {
   @Column({ name: 'last_login_at', nullable: true })
   lastLoginAt: Date;
 
+  // Legacy single-provider fields (kept for back-compat / first OAuth users).
   @Column({ name: 'oauth_provider', nullable: true, length: 32 })
   oauthProvider: string;
 
   @Column({ name: 'oauth_id', nullable: true, length: 255 })
   oauthId: string;
 
-  // Linked WCA (World Cube Association) ID, e.g. "2015FOOB01".
+  // Per-provider identity links — an account can have BOTH, so signing in with
+  // either resolves to the same account.
+  // (unique index allows multiple NULLs on both postgres and sqlite)
+  @Column({ name: 'google_id', type: 'varchar', nullable: true, length: 255 })
+  @Index({ unique: true })
+  googleId: string | null;
+
+  @Column({ name: 'wca_oauth_id', type: 'varchar', nullable: true, length: 255 })
+  @Index({ unique: true })
+  wcaOauthId: string | null;
+
+  // Linked WCA (World Cube Association) ID, e.g. "2015FOOB01" (for display).
   @Column({ name: 'wca_id', type: 'varchar', nullable: true, length: 20 })
   wcaId: string | null;
 

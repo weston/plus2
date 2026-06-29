@@ -1,7 +1,21 @@
-import { Controller, Post, Get, Body, Query, Res, HttpCode, HttpStatus } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Query,
+  Req,
+  Res,
+  UseGuards,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
+import { JwtAuthGuard } from './jwt-auth.guard';
 import { RegisterDto, LoginDto, RefreshTokenDto } from './auth.dto';
+
+type Provider = 'google' | 'wca';
 
 @Controller('auth')
 export class AuthController {
@@ -27,180 +41,177 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout() {
-    // For JWT, logout is handled client-side by removing tokens
     return { message: 'Logged out successfully' };
   }
 
+  // Short-lived token the SPA includes as `state` when linking a second provider
+  // to the already-logged-in account (from settings).
+  @Get('link-token')
+  @UseGuards(JwtAuthGuard)
+  linkToken(@Req() req: { user: { id: string } }) {
+    return { token: this.authService.mintLinkToken(req.user.id) };
+  }
+
   // ===========================================================================
-  // Google SSO (scaffold)
-  //
-  // SETUP (see SSO_WCA_SETUP.md): create an OAuth client in Google Cloud Console
-  // and set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and (optionally)
-  // GOOGLE_CALLBACK_URL + WEB_URL. Add the callback URL as an authorized redirect
-  // URI. Until those are set, these routes return a friendly "not configured".
+  // OAuth (Google + WCA). Sign-in by default; if `state` is a valid link token,
+  // the callback LINKS the provider to that account instead of signing in.
+  // SETUP / env vars: see SSO_WCA_SETUP.md.
   // ===========================================================================
 
-  private googleConfig() {
-    const clientId = process.env.GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  private oauthConfig(provider: Provider) {
+    const prefix = provider === 'google' ? 'GOOGLE' : 'WCA';
+    const clientId = process.env[`${prefix}_CLIENT_ID`];
+    const clientSecret = process.env[`${prefix}_CLIENT_SECRET`];
     if (!clientId || !clientSecret) return null;
     return {
       clientId,
       clientSecret,
       callbackUrl:
-        process.env.GOOGLE_CALLBACK_URL || 'http://localhost:3001/api/auth/google/callback',
+        process.env[`${prefix}_CALLBACK_URL`] ||
+        `http://localhost:3001/api/auth/${provider}/callback`,
     };
   }
 
-  @Get('google')
-  googleAuth(@Res() res: Response) {
-    const cfg = this.googleConfig();
-    if (!cfg) {
-      res.status(503).json({ message: 'Google sign-in is not configured.' });
-      return;
-    }
+  private authorizeUrl(provider: Provider, cfg: { clientId: string; callbackUrl: string }, state?: string) {
+    const base =
+      provider === 'google'
+        ? 'https://accounts.google.com/o/oauth2/v2/auth'
+        : 'https://www.worldcubeassociation.org/oauth/authorize';
     const params = new URLSearchParams({
       client_id: cfg.clientId,
       redirect_uri: cfg.callbackUrl,
       response_type: 'code',
-      scope: 'openid email profile',
-      access_type: 'offline',
-      prompt: 'select_account',
+      scope: provider === 'google' ? 'openid email profile' : 'public email',
     });
-    res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+    if (provider === 'google') {
+      params.set('access_type', 'offline');
+      params.set('prompt', 'select_account');
+    }
+    if (state) params.set('state', state);
+    return `${base}?${params.toString()}`;
   }
 
-  @Get('google/callback')
-  async googleCallback(@Query('code') code: string, @Res() res: Response) {
-    const webUrl = process.env.WEB_URL || 'http://localhost:3000';
-    const cfg = this.googleConfig();
-    if (!cfg || !code) {
-      res.redirect(`${webUrl}/login?error=google`);
-      return;
-    }
-    try {
-      // Exchange the authorization code for tokens.
-      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          code,
-          client_id: cfg.clientId,
-          client_secret: cfg.clientSecret,
-          redirect_uri: cfg.callbackUrl,
-          grant_type: 'authorization_code',
-        }),
-      });
-      const tokenData = (await tokenRes.json()) as { access_token?: string };
-      if (!tokenData.access_token) throw new Error('No access token from Google');
+  // Exchange the auth code for a normalized identity { oauthId, email, name, wcaId }.
+  private async fetchIdentity(
+    provider: Provider,
+    code: string,
+    cfg: { clientId: string; clientSecret: string; callbackUrl: string },
+  ): Promise<{ oauthId: string; email: string; name?: string; wcaId?: string | null }> {
+    const tokenUrl =
+      provider === 'google'
+        ? 'https://oauth2.googleapis.com/token'
+        : 'https://www.worldcubeassociation.org/oauth/token';
+    const tokenRes = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: cfg.clientId,
+        client_secret: cfg.clientSecret,
+        redirect_uri: cfg.callbackUrl,
+        grant_type: 'authorization_code',
+      }),
+    });
+    const tokenData = (await tokenRes.json()) as { access_token?: string };
+    if (!tokenData.access_token) throw new Error('No access token');
 
-      // Fetch the user's basic profile.
+    if (provider === 'google') {
       const infoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
         headers: { Authorization: `Bearer ${tokenData.access_token}` },
       });
-      const profile = (await infoRes.json()) as { sub?: string; email?: string; name?: string };
-      if (!profile.sub || !profile.email) throw new Error('Incomplete Google profile');
-
-      const result = await this.authService.oauthLogin({
-        provider: 'google',
-        oauthId: profile.sub,
-        email: profile.email,
-        name: profile.name,
-      });
-
-      // Hand the tokens back to the SPA, which stores them and continues.
-      const q = new URLSearchParams({
-        accessToken: result.accessToken,
-        refreshToken: result.refreshToken,
-      });
-      res.redirect(`${webUrl}/login?${q.toString()}`);
-    } catch {
-      res.redirect(`${webUrl}/login?error=google`);
-    }
-  }
-
-  // ===========================================================================
-  // WCA (World Cube Association) integration (scaffold)
-  //
-  // SETUP (see SSO_WCA_SETUP.md): register an OAuth application at
-  // worldcubeassociation.org/oauth/applications and set WCA_CLIENT_ID,
-  // WCA_CLIENT_SECRET, and (optionally) WCA_CALLBACK_URL + WEB_URL. Signing in
-  // with WCA links the user's WCA ID; official records can then be pulled from
-  // the public WCA API by wcaId (see UsersController.getWcaRecords).
-  // ===========================================================================
-
-  private wcaConfig() {
-    const clientId = process.env.WCA_CLIENT_ID;
-    const clientSecret = process.env.WCA_CLIENT_SECRET;
-    if (!clientId || !clientSecret) return null;
-    return {
-      clientId,
-      clientSecret,
-      callbackUrl: process.env.WCA_CALLBACK_URL || 'http://localhost:3001/api/auth/wca/callback',
-    };
-  }
-
-  @Get('wca')
-  wcaAuth(@Res() res: Response) {
-    const cfg = this.wcaConfig();
-    if (!cfg) {
-      res.status(503).json({ message: 'WCA sign-in is not configured.' });
-      return;
-    }
-    const params = new URLSearchParams({
-      client_id: cfg.clientId,
-      redirect_uri: cfg.callbackUrl,
-      response_type: 'code',
-      scope: 'public email',
-    });
-    res.redirect(`https://www.worldcubeassociation.org/oauth/authorize?${params.toString()}`);
-  }
-
-  @Get('wca/callback')
-  async wcaCallback(@Query('code') code: string, @Res() res: Response) {
-    const webUrl = process.env.WEB_URL || 'http://localhost:3000';
-    const cfg = this.wcaConfig();
-    if (!cfg || !code) {
-      res.redirect(`${webUrl}/login?error=wca`);
-      return;
-    }
-    try {
-      const tokenRes = await fetch('https://www.worldcubeassociation.org/oauth/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          code,
-          client_id: cfg.clientId,
-          client_secret: cfg.clientSecret,
-          redirect_uri: cfg.callbackUrl,
-          grant_type: 'authorization_code',
-        }),
-      });
-      const tokenData = (await tokenRes.json()) as { access_token?: string };
-      if (!tokenData.access_token) throw new Error('No access token from WCA');
-
+      const p = (await infoRes.json()) as { sub?: string; email?: string; name?: string };
+      if (!p.sub || !p.email) throw new Error('Incomplete Google profile');
+      return { oauthId: p.sub, email: p.email, name: p.name };
+    } else {
       const meRes = await fetch('https://www.worldcubeassociation.org/api/v0/me', {
         headers: { Authorization: `Bearer ${tokenData.access_token}` },
       });
       const me = (await meRes.json()) as {
         me?: { id: number; wca_id: string | null; name?: string; email?: string };
       };
-      const profile = me.me;
-      if (!profile?.email) throw new Error('Incomplete WCA profile');
+      const p = me.me;
+      if (!p?.email) throw new Error('Incomplete WCA profile');
+      return { oauthId: String(p.id), email: p.email, name: p.name, wcaId: p.wca_id };
+    }
+  }
 
-      const result = await this.authService.oauthLogin({
-        provider: 'wca',
-        oauthId: String(profile.id),
-        email: profile.email,
-        name: profile.name,
-        wcaId: profile.wca_id,
-      });
+  // Shared finisher: link to the current account if `state` is a valid link
+  // token, otherwise sign in / create, then redirect back to the SPA.
+  private async finishOauth(
+    res: Response,
+    provider: Provider,
+    identity: { oauthId: string; email: string; name?: string; wcaId?: string | null },
+    state: string | undefined,
+  ) {
+    const webUrl = process.env.WEB_URL || 'http://localhost:3000';
+    if (state) {
+      const userId = this.authService.verifyLinkToken(state);
+      if (userId) {
+        try {
+          await this.authService.linkOauth(userId, {
+            provider,
+            oauthId: identity.oauthId,
+            wcaId: identity.wcaId,
+          });
+          res.redirect(`${webUrl}/settings?linked=${provider}`);
+        } catch {
+          res.redirect(`${webUrl}/settings?error=link_conflict`);
+        }
+        return;
+      }
+      // invalid/expired token -> fall through to a normal sign-in
+    }
+    const result = await this.authService.oauthLogin({ provider, ...identity });
+    const q = new URLSearchParams({
+      accessToken: result.accessToken,
+      refreshToken: result.refreshToken,
+    });
+    res.redirect(`${webUrl}/login?${q.toString()}`);
+  }
 
-      const q = new URLSearchParams({
-        accessToken: result.accessToken,
-        refreshToken: result.refreshToken,
-      });
-      res.redirect(`${webUrl}/login?${q.toString()}`);
+  @Get('google')
+  googleAuth(@Query('state') state: string, @Res() res: Response) {
+    const cfg = this.oauthConfig('google');
+    if (!cfg) return res.status(503).json({ message: 'Google sign-in is not configured.' });
+    res.redirect(this.authorizeUrl('google', cfg, state));
+  }
+
+  @Get('google/callback')
+  async googleCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Res() res: Response,
+  ) {
+    const webUrl = process.env.WEB_URL || 'http://localhost:3000';
+    const cfg = this.oauthConfig('google');
+    if (!cfg || !code) return res.redirect(`${webUrl}/login?error=google`);
+    try {
+      const identity = await this.fetchIdentity('google', code, cfg);
+      await this.finishOauth(res, 'google', identity, state);
+    } catch {
+      res.redirect(`${webUrl}/login?error=google`);
+    }
+  }
+
+  @Get('wca')
+  wcaAuth(@Query('state') state: string, @Res() res: Response) {
+    const cfg = this.oauthConfig('wca');
+    if (!cfg) return res.status(503).json({ message: 'WCA sign-in is not configured.' });
+    res.redirect(this.authorizeUrl('wca', cfg, state));
+  }
+
+  @Get('wca/callback')
+  async wcaCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Res() res: Response,
+  ) {
+    const webUrl = process.env.WEB_URL || 'http://localhost:3000';
+    const cfg = this.oauthConfig('wca');
+    if (!cfg || !code) return res.redirect(`${webUrl}/login?error=wca`);
+    try {
+      const identity = await this.fetchIdentity('wca', code, cfg);
+      await this.finishOauth(res, 'wca', identity, state);
     } catch {
       res.redirect(`${webUrl}/login?error=wca`);
     }

@@ -92,6 +92,17 @@ export class UsersController {
     return profile.stats;
   }
 
+  @Get('me/connections')
+  @UseGuards(JwtAuthGuard)
+  async getMyConnections(@Request() req: { user: { id: string } }) {
+    const user = await this.usersService.findById(req.user.id);
+    return {
+      google: !!user.googleId,
+      wca: !!user.wcaOauthId,
+      wcaId: user.wcaId || null,
+    };
+  }
+
   @Get('me/preferences')
   @UseGuards(JwtAuthGuard)
   async getPreferences(@Request() req: { user: { id: string } }) {

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
-import { keybindingsApi, usersApi } from '@/lib/api';
+import { authApi, keybindingsApi, usersApi } from '@/lib/api';
 import { ALL_MOVES, DEFAULT_KEYBINDINGS } from '@plus2/shared';
 import { CountryFlag, COUNTRIES } from '@/components/CountryFlag';
 
@@ -28,6 +28,7 @@ const DEFAULT_CUBE_COLORS: Record<string, string> = {
 };
 
 const DEFAULT_ANIMATION_SPEED = 3;
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -49,6 +50,35 @@ export default function SettingsPage() {
 
   // Account state
   const [country, setCountry] = useState<string>('');
+  const [connections, setConnections] = useState<{ google: boolean; wca: boolean; wcaId: string | null } | null>(null);
+  const [linkMessage, setLinkMessage] = useState('');
+
+  // Load linked providers + handle the link-callback query (?linked / ?error).
+  useEffect(() => {
+    if (!accessToken) return;
+    const refresh = () => usersApi.getConnections(accessToken).then(setConnections).catch(() => {});
+    refresh();
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('linked')) {
+      setLinkMessage(`${params.get('linked') === 'wca' ? 'WCA' : 'Google'} account linked!`);
+      setActiveTab('account');
+      window.history.replaceState({}, '', '/settings');
+    } else if (params.get('error') === 'link_conflict') {
+      setLinkMessage('That account is already linked to a different user.');
+      setActiveTab('account');
+      window.history.replaceState({}, '', '/settings');
+    }
+  }, [accessToken]);
+
+  const handleLink = async (provider: 'google' | 'wca') => {
+    if (!accessToken) return;
+    try {
+      const { token } = await authApi.getLinkToken(accessToken);
+      window.location.href = `${API_BASE}/auth/${provider}?state=${encodeURIComponent(token)}`;
+    } catch {
+      setLinkMessage('Could not start linking. Please try again.');
+    }
+  };
 
   // Redirect if not logged in (wait for hydration first)
   useEffect(() => {
@@ -463,6 +493,34 @@ export default function SettingsPage() {
                 <div className="flex justify-between items-center py-3">
                   <span className="text-gray-400">MMR</span>
                   <span className="font-semibold">{user.mmr}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <h2 className="text-xl font-semibold mb-2">Connected Accounts</h2>
+              <p className="text-gray-400 mb-4">
+                Link Google and WCA so you can sign in with either &mdash; they&apos;ll be the same account.
+              </p>
+              {linkMessage && <div className="mb-4 text-sm text-blue-400">{linkMessage}</div>}
+              <div className="space-y-3">
+                <div className="flex justify-between items-center py-2 border-b border-gray-700">
+                  <span className="flex items-center gap-2 font-medium">Google</span>
+                  {connections?.google ? (
+                    <span className="text-green-400 text-sm">&#10003; Linked</span>
+                  ) : (
+                    <button onClick={() => handleLink('google')} className="btn btn-secondary text-sm py-1 px-4">Link</button>
+                  )}
+                </div>
+                <div className="flex justify-between items-center py-2">
+                  <span className="flex items-center gap-2 font-medium">
+                    WCA{connections?.wcaId && <span className="text-xs text-gray-500">({connections.wcaId})</span>}
+                  </span>
+                  {connections?.wca ? (
+                    <span className="text-green-400 text-sm">&#10003; Linked</span>
+                  ) : (
+                    <button onClick={() => handleLink('wca')} className="btn btn-secondary text-sm py-1 px-4">Link</button>
+                  )}
                 </div>
               </div>
             </div>

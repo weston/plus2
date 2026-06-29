@@ -123,6 +123,10 @@ export const authApi = {
       method: 'POST',
       body: { refreshToken },
     }),
+
+  // Short-lived token to carry the current account through a link OAuth round-trip.
+  getLinkToken: (token: string) =>
+    request<{ token: string }>('/auth/link-token', { token }),
 };
 
 // User preferences type
@@ -177,6 +181,9 @@ export const usersApi = {
       token,
       body: { country },
     }),
+
+  getConnections: (token: string) =>
+    request<{ google: boolean; wca: boolean; wcaId: string | null }>('/users/me/connections', { token }),
 
   getPreferences: (token: string) =>
     request<UserPreferences>('/users/me/preferences', { token }),
