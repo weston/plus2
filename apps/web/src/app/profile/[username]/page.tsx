@@ -7,7 +7,7 @@ import { usersApi, UserProfile } from '@/lib/api';
 import { LeagueBadge } from '@/components/LeagueBadge';
 import { CountryFlag } from '@/components/CountryFlag';
 import { useAuthStore } from '@/stores/auth';
-import { computeBadges, computeWcaBadges, type WcaPersonalRecords } from '@plus2/shared';
+import { computeBadges, computeChampionshipBadges, computeRecordBadge, type WcaAchievements } from '@plus2/shared';
 import type { LeagueTier } from '@plus2/shared';
 
 interface MmrHistoryPoint {
@@ -124,7 +124,7 @@ export default function ProfilePage() {
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [ghostRecordingCount, setGhostRecordingCount] = useState(0);
   const [availableGhostsCount, setAvailableGhostsCount] = useState(0);
-  const [wcaRecords, setWcaRecords] = useState<WcaPersonalRecords | null>(null);
+  const [championships, setChampionships] = useState<WcaAchievements | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -141,16 +141,16 @@ export default function ProfilePage() {
         if (cancelled) return;
         setProfile(profileData);
 
-        // Pull official WCA records (public API) for WCA badges.
+        // Pull major-championship podium/win achievements (public WCA API) for badges.
         if (profileData.wcaId) {
           usersApi
-            .getWcaRecords(profileData.wcaId)
-            .then((r) => {
-              if (!cancelled) setWcaRecords(r.personalRecords);
+            .getChampionshipAchievements(profileData.wcaId)
+            .then((c) => {
+              if (!cancelled) setChampionships(c);
             })
             .catch(() => {});
         } else {
-          setWcaRecords(null);
+          setChampionships(null);
         }
 
         // Load MMR history, matches, ghost races, and ghost recording count
@@ -293,7 +293,8 @@ export default function ProfilePage() {
         {(() => {
           const badges = [
             ...computeBadges({ league: profile.league as LeagueTier, stats: profile.stats }),
-            ...computeWcaBadges(wcaRecords),
+            ...computeChampionshipBadges(championships),
+            ...computeRecordBadge(championships?.recordTier),
           ];
           if (badges.length === 0) return null;
           const tierRing: Record<string, string> = {

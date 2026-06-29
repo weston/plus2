@@ -17,7 +17,8 @@ import { UsersService } from './users.service';
 import { IsString, MinLength, MaxLength, Matches, IsNumber, IsOptional, IsObject, IsBoolean, Min, Max, Length } from 'class-validator';
 import { MatchesService } from '../matches/matches.service';
 import { SoloService } from '../solo/solo.service';
-import type { PuzzleSize } from '@plus2/shared';
+import type { PuzzleSize, WcaAchievements } from '@plus2/shared';
+import { classifyChampionshipAchievements } from './championships.util';
 
 class UpdateUsernameDto {
   @IsString()
@@ -145,6 +146,26 @@ export class UsersController {
       return { wcaId, person: data.person ?? null, personalRecords: data.personal_records ?? null };
     } catch {
       return { wcaId, person: null, personalRecords: null };
+    }
+  }
+
+  // Major-championship (World + National) podium/win achievements for a WCA ID,
+  // derived from the person's official results × the WCA championships table.
+  @Get('wca/:wcaId/championships')
+  async getChampionshipAchievements(
+    @Param('wcaId') wcaId: string,
+  ): Promise<WcaAchievements> {
+    const empty: WcaAchievements = { world: null, national: null, recordTier: null };
+    try {
+      const res = await fetch(
+        `https://www.worldcubeassociation.org/api/v0/persons/${encodeURIComponent(wcaId)}/results`,
+      );
+      if (!res.ok) return empty;
+      const results = await res.json();
+      if (!Array.isArray(results)) return empty;
+      return classifyChampionshipAchievements(results);
+    } catch {
+      return empty;
     }
   }
 

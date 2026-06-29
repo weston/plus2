@@ -227,6 +227,12 @@ export const usersApi = {
       `/users/wca/${encodeURIComponent(wcaId)}/records`,
     ),
 
+  // Major-championship podiums + best WCA record ever held, for badges.
+  getChampionshipAchievements: (wcaId: string) =>
+    request<import('@plus2/shared').WcaAchievements>(
+      `/users/wca/${encodeURIComponent(wcaId)}/championships`,
+    ),
+
   getAvailableGhostsCount: (token: string, ghostUserId: string, puzzleSize = '3x3') =>
     request<{ count: number }>(`/users/${ghostUserId}/available-ghosts?puzzleSize=${puzzleSize}`, { token }),
 

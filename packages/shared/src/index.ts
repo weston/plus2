@@ -493,25 +493,63 @@ export interface WcaPersonalRecords {
   };
 }
 
-/** Badges earned from official WCA results (centiseconds). */
-export function computeWcaBadges(records: WcaPersonalRecords | null | undefined): Badge[] {
-  if (!records || Object.keys(records).length === 0) return [];
-  const badges: Badge[] = [
-    { id: 'wca-competitor', label: 'WCA Competitor', description: 'Has official WCA competition results', icon: '🌐', tier: 'special' },
-  ];
+/**
+ * Best podium/win achievement at WCA *major championships* (World + National),
+ * computed server-side from a person's results × the WCA championships table.
+ * `bestPos` is the best finishing position (1 = win) across that level's finals;
+ * the `*Event` fields name a representative achievement for the badge tooltip.
+ */
+export interface ChampionshipAchievements {
+  world?: { bestPos: number; label: string } | null;
+  national?: { bestPos: number; label: string } | null;
+}
 
-  const single333 = records['333']?.single?.best; // centiseconds
-  const speed: Array<[number, string, string, BadgeTier]> = [
-    [2000, 'wca-sub20', 'Official Sub-20', 'silver'],
-    [1500, 'wca-sub15', 'Official Sub-15', 'gold'],
-    [1000, 'wca-sub10', 'Official Sub-10', 'special'],
-  ];
-  if (single333 != null) {
-    for (const [cs, id, label, tier] of speed) {
-      if (single333 <= cs) {
-        badges.push({ id, label, description: `Official 3x3 single under ${cs / 100}s`, icon: '🏅', tier });
-      }
-    }
+// Highest WCA record ever held (world > continental > national).
+export type WcaRecordTier = 'world' | 'continental' | 'national';
+
+// Championship podiums + the best WCA record ever held — everything derived from
+// a person's official results in one pass.
+export interface WcaAchievements extends ChampionshipAchievements {
+  recordTier?: WcaRecordTier | null;
+}
+
+/**
+ * Badges for podiuming / winning a major championship (World or National).
+ * A win (pos 1) supersedes a podium at the same level. Pure.
+ */
+export function computeChampionshipBadges(a: ChampionshipAchievements | null | undefined): Badge[] {
+  if (!a) return [];
+  const badges: Badge[] = [];
+
+  if (a.world && a.world.bestPos >= 1 && a.world.bestPos <= 3) {
+    badges.push(
+      a.world.bestPos === 1
+        ? { id: 'wc-champion', label: 'World Champion', description: a.world.label || 'Won a WCA World Championship', icon: '👑', tier: 'special' }
+        : { id: 'wc-podium', label: 'World Championship Podium', description: a.world.label || 'Podiumed at a WCA World Championship', icon: '🌍', tier: 'special' },
+    );
   }
+
+  if (a.national && a.national.bestPos >= 1 && a.national.bestPos <= 3) {
+    badges.push(
+      a.national.bestPos === 1
+        ? { id: 'natl-champion', label: 'National Champion', description: a.national.label || 'Won a National Championship', icon: '🏆', tier: 'gold' }
+        : { id: 'natl-podium', label: 'National Championship Podium', description: a.national.label || 'Podiumed at a National Championship', icon: '🥉', tier: 'gold' },
+    );
+  }
+
   return badges;
+}
+
+/** Badge for the highest WCA record (single or average) a person has ever held. Pure. */
+export function computeRecordBadge(tier: WcaRecordTier | null | undefined): Badge[] {
+  switch (tier) {
+    case 'world':
+      return [{ id: 'wca-wr', label: 'World Record', description: 'Has held a WCA World Record', icon: '🌍', tier: 'special' }];
+    case 'continental':
+      return [{ id: 'wca-cr', label: 'Continental Record', description: 'Has held a WCA Continental Record', icon: '🗺️', tier: 'special' }];
+    case 'national':
+      return [{ id: 'wca-nr', label: 'National Record', description: 'Has held a WCA National Record', icon: '⚡', tier: 'gold' }];
+    default:
+      return [];
+  }
 }
