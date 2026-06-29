@@ -435,38 +435,17 @@ const LEAGUE_BADGE_ICONS: Record<LeagueTier, string> = {
   grandmaster: '🏅',
 };
 
-/** Compute earned badges from a user's league + per-puzzle stats. Pure. */
+/**
+ * Earned badges from a user's standing. Currently just the League badges — the
+ * grindy participation/speed badges (first win, sub-N, etc.) were removed in
+ * favour of the prestige WCA badges (championships, records, medals).
+ * Pure. `stats` is accepted for forward-compat but unused.
+ */
 export function computeBadges(input: {
   league: LeagueTier;
-  stats: BadgeStatLike[];
+  stats?: BadgeStatLike[];
 }): Badge[] {
   const badges: Badge[] = [];
-  const totalWins = input.stats.reduce((sum, s) => sum + (s.gamesWon || 0), 0);
-  const totalGames = input.stats.reduce((sum, s) => sum + (s.gamesPlayed || 0), 0);
-  const best3x3 = input.stats.find((s) => s.puzzleSize === '3x3')?.bestTimeMs ?? null;
-
-  // Win milestones
-  if (totalWins >= 1) badges.push({ id: 'first-win', label: 'First Win', description: 'Won your first ranked race', icon: '🏆', tier: 'bronze' });
-  if (totalWins >= 10) badges.push({ id: 'wins-10', label: 'On a Roll', description: 'Won 10 ranked races', icon: '🔥', tier: 'silver' });
-  if (totalWins >= 100) badges.push({ id: 'wins-100', label: 'Centurion', description: 'Won 100 ranked races', icon: '💯', tier: 'gold' });
-
-  // Volume
-  if (totalGames >= 50) badges.push({ id: 'veteran', label: 'Veteran', description: 'Played 50 ranked races', icon: '🎖️', tier: 'silver' });
-
-  // 3x3 speed records
-  const speedTiers: Array<[number, string, string, BadgeTier]> = [
-    [30000, 'sub30', 'Sub-30', 'bronze'],
-    [20000, 'sub20', 'Sub-20', 'silver'],
-    [15000, 'sub15', 'Sub-15', 'gold'],
-    [10000, 'sub10', 'Sub-10', 'special'],
-  ];
-  if (best3x3 != null) {
-    for (const [ms, id, label, tier] of speedTiers) {
-      if (best3x3 <= ms) {
-        badges.push({ id, label, description: `Solved a 3x3 in under ${ms / 1000}s`, icon: '⚡', tier });
-      }
-    }
-  }
 
   // League badges (every tier up to and including the current global league)
   const rank = LEAGUE_TIERS.indexOf(input.league);
@@ -507,10 +486,11 @@ export interface ChampionshipAchievements {
 // Highest WCA record ever held (world > continental > national).
 export type WcaRecordTier = 'world' | 'continental' | 'national';
 
-// Championship podiums + the best WCA record ever held — everything derived from
-// a person's official results in one pass.
+// Championship podiums, best WCA record ever held, and lifetime competition
+// medal counts (official 1st/2nd/3rd-place finishes).
 export interface WcaAchievements extends ChampionshipAchievements {
   recordTier?: WcaRecordTier | null;
+  medals?: { gold: number; silver: number; bronze: number } | null;
 }
 
 /**

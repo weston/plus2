@@ -155,15 +155,45 @@ export class UsersController {
   async getChampionshipAchievements(
     @Param('wcaId') wcaId: string,
   ): Promise<WcaAchievements> {
-    const empty: WcaAchievements = { world: null, national: null, recordTier: null };
+    const empty: WcaAchievements = { world: null, national: null, recordTier: null, medals: null };
+    const id = encodeURIComponent(wcaId);
+    const base = 'https://www.worldcubeassociation.org/api/v0/persons';
     try {
-      const res = await fetch(
-        `https://www.worldcubeassociation.org/api/v0/persons/${encodeURIComponent(wcaId)}/results`,
-      );
-      if (!res.ok) return empty;
-      const results = await res.json();
-      if (!Array.isArray(results)) return empty;
-      return classifyChampionshipAchievements(results);
+      // person -> lifetime medals + ever-held record counts; results -> championship podiums
+      const [personRes, resultsRes] = await Promise.all([
+        fetch(`${base}/${id}`),
+        fetch(`${base}/${id}/results`),
+      ]);
+      const person = personRes.ok
+        ? ((await personRes.json()) as {
+            medals?: { gold?: number; silver?: number; bronze?: number };
+            records?: { world?: number; continental?: number; national?: number };
+          })
+        : null;
+      const resultsJson = resultsRes.ok ? await resultsRes.json() : [];
+      const championships = Array.isArray(resultsJson)
+        ? classifyChampionshipAchievements(resultsJson)
+        : { world: null, national: null };
+
+      // Highest record tier ever held (the WCA `records` counts are exclusive,
+      // so checking world -> continental -> national gives the best tier).
+      const rec = person?.records;
+      const recordTier = rec
+        ? rec.world
+          ? 'world'
+          : rec.continental
+            ? 'continental'
+            : rec.national
+              ? 'national'
+              : null
+        : null;
+
+      const m = person?.medals;
+      const medals = m
+        ? { gold: m.gold ?? 0, silver: m.silver ?? 0, bronze: m.bronze ?? 0 }
+        : null;
+
+      return { ...championships, recordTier, medals };
     } catch {
       return empty;
     }

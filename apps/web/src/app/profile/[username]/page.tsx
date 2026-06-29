@@ -322,6 +322,30 @@ export default function ProfilePage() {
           );
         })()}
 
+        {/* WCA Competition Podiums (total official 1st/2nd/3rd finishes) */}
+        {championships?.medals &&
+          championships.medals.gold + championships.medals.silver + championships.medals.bronze > 0 && (
+            <div className="card mb-6">
+              <h2 className="text-xl font-bold mb-4">Competition Podiums</h2>
+              <div className="flex gap-8">
+                {([
+                  ['🥇', championships.medals.gold, '1st place'],
+                  ['🥈', championships.medals.silver, '2nd place'],
+                  ['🥉', championships.medals.bronze, '3rd place'],
+                ] as const).map(([icon, count, label]) => (
+                  <div key={label} className="flex items-center gap-3">
+                    <span className="text-3xl leading-none">{icon}</span>
+                    <div>
+                      <div className="text-2xl font-bold">{count}</div>
+                      <div className="text-xs text-gray-400">{label}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-gray-500 mt-4">Official WCA competition results</p>
+            </div>
+          )}
+
         {/* Stats by Puzzle */}
         <div className="card mb-6">
           <h2 className="text-xl font-bold mb-4">Stats by Puzzle</h2>

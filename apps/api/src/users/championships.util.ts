@@ -1,4 +1,4 @@
-import type { WcaAchievements, WcaRecordTier } from '@plus2/shared';
+import type { ChampionshipAchievements } from '@plus2/shared';
 import { CHAMPIONSHIPS } from './championships';
 
 // One row from GET /api/v0/persons/{wcaId}/results (subset we use).
@@ -7,25 +7,10 @@ interface WcaResult {
   round_type_id: string; // 'f' = final, 'c' = combined final, '1'/'2'/'d'/'e'/'g' = earlier rounds
   competition_id: string;
   event_id: string;
-  regional_single_record?: string | null; // 'WR' | 'NR' | continental code | '' | null
-  regional_average_record?: string | null;
 }
 
 // Only finals decide podiums/wins.
 const FINAL_ROUNDS = new Set(['f', 'c']);
-
-// Continental record markers (Africa, Asia, Europe, North/South America, Oceania).
-const CONTINENTAL_RECORDS = new Set(['AfR', 'AsR', 'ER', 'NAR', 'SAR', 'OcR']);
-
-// Highest record tier from a single marker, or null.
-function tierOf(marker: string | null | undefined): WcaRecordTier | null {
-  if (marker === 'WR') return 'world';
-  if (marker && CONTINENTAL_RECORDS.has(marker)) return 'continental';
-  if (marker === 'NR') return 'national';
-  return null;
-}
-
-const TIER_RANK: Record<WcaRecordTier, number> = { national: 1, continental: 2, world: 3 };
 
 const EVENT_NAMES: Record<string, string> = {
   '333': '3x3', '222': '2x2', '444': '4x4', '555': '5x5', '666': '6x6', '777': '7x7',
@@ -57,19 +42,13 @@ function prettyComp(id: string): string {
  * is intentionally excluded per the badge spec). `pos` is the final-round
  * position, so pos 1 = championship win, pos ≤ 3 = podium.
  */
-export function classifyChampionshipAchievements(results: WcaResult[]): WcaAchievements {
+export function classifyChampionshipAchievements(results: WcaResult[]): ChampionshipAchievements {
   const best: Record<'world' | 'national', { bestPos: number; label: string } | null> = {
     world: null,
     national: null,
   };
-  let recordTier: WcaRecordTier | null = null;
 
   for (const r of results) {
-    // Records can be set in ANY round (not just finals).
-    for (const t of [tierOf(r.regional_single_record), tierOf(r.regional_average_record)]) {
-      if (t && (!recordTier || TIER_RANK[t] > TIER_RANK[recordTier])) recordTier = t;
-    }
-
     if (!FINAL_ROUNDS.has(r.round_type_id)) continue;
     if (typeof r.pos !== 'number' || r.pos < 1 || r.pos > 3) continue;
     const raw = CHAMPIONSHIPS[r.competition_id];
@@ -85,5 +64,5 @@ export function classifyChampionshipAchievements(results: WcaResult[]): WcaAchie
     }
   }
 
-  return { world: best.world, national: best.national, recordTier };
+  return { world: best.world, national: best.national };
 }
