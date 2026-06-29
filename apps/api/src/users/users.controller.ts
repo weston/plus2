@@ -159,10 +159,12 @@ export class UsersController {
     const id = encodeURIComponent(wcaId);
     const base = 'https://www.worldcubeassociation.org/api/v0/persons';
     try {
-      // person -> lifetime medals + ever-held record counts; results -> championship podiums
+      // person -> lifetime medals + ever-held record counts; results -> championship podiums.
+      // Cap the upstream WCA calls so a slow/rate-limited WCA never hangs us.
+      const signal = AbortSignal.timeout(8000);
       const [personRes, resultsRes] = await Promise.all([
-        fetch(`${base}/${id}`),
-        fetch(`${base}/${id}/results`),
+        fetch(`${base}/${id}`, { signal }),
+        fetch(`${base}/${id}/results`, { signal }),
       ]);
       const person = personRes.ok
         ? ((await personRes.json()) as {

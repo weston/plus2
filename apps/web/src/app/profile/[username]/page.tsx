@@ -10,6 +10,13 @@ import { useAuthStore } from '@/stores/auth';
 import { computeBadges, computeChampionshipBadges, computeRecordBadge, type WcaAchievements } from '@plus2/shared';
 import type { LeagueTier } from '@plus2/shared';
 
+const BADGE_RING: Record<string, string> = {
+  bronze: 'ring-amber-700/50',
+  silver: 'ring-gray-400/50',
+  gold: 'ring-yellow-400/60',
+  special: 'ring-purple-400/60',
+};
+
 interface MmrHistoryPoint {
   date: string;
   mmr: number;
@@ -243,17 +250,6 @@ export default function ProfilePage() {
                 <div className="flex items-center gap-2 mt-1">
                   <LeagueBadge league={profile.league as LeagueTier} />
                   <span className="text-gray-400">{profile.mmr} MMR</span>
-                  {profile.wcaId && (
-                    <a
-                      href={`https://www.worldcubeassociation.org/persons/${profile.wcaId}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
-                      title="View WCA profile"
-                    >
-                      WCA: {profile.wcaId}
-                    </a>
-                  )}
                 </div>
               </div>
             </div>
@@ -289,20 +285,10 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* Badges */}
+        {/* In-app badges (league progression) */}
         {(() => {
-          const badges = [
-            ...computeBadges({ league: profile.league as LeagueTier, stats: profile.stats }),
-            ...computeChampionshipBadges(championships),
-            ...computeRecordBadge(championships?.recordTier),
-          ];
+          const badges = computeBadges({ league: profile.league as LeagueTier });
           if (badges.length === 0) return null;
-          const tierRing: Record<string, string> = {
-            bronze: 'ring-amber-700/50',
-            silver: 'ring-gray-400/50',
-            gold: 'ring-yellow-400/60',
-            special: 'ring-purple-400/60',
-          };
           return (
             <div className="card mb-6">
               <h2 className="text-xl font-bold mb-4">Badges</h2>
@@ -311,7 +297,7 @@ export default function ProfilePage() {
                   <div
                     key={b.id}
                     title={b.description}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800 ring-1 ${tierRing[b.tier] || 'ring-gray-600'}`}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800 ring-1 ${BADGE_RING[b.tier] || 'ring-gray-600'}`}
                   >
                     <span className="text-xl leading-none">{b.icon}</span>
                     <span className="text-sm font-medium">{b.label}</span>
@@ -322,29 +308,77 @@ export default function ProfilePage() {
           );
         })()}
 
-        {/* WCA Competition Podiums (total official 1st/2nd/3rd finishes) */}
-        {championships?.medals &&
-          championships.medals.gold + championships.medals.silver + championships.medals.bronze > 0 && (
-            <div className="card mb-6">
-              <h2 className="text-xl font-bold mb-4">Competition Podiums</h2>
-              <div className="flex gap-8">
-                {([
-                  ['🥇', championships.medals.gold, '1st place'],
-                  ['🥈', championships.medals.silver, '2nd place'],
-                  ['🥉', championships.medals.bronze, '3rd place'],
-                ] as const).map(([icon, count, label]) => (
-                  <div key={label} className="flex items-center gap-3">
-                    <span className="text-3xl leading-none">{icon}</span>
-                    <div>
-                      <div className="text-2xl font-bold">{count}</div>
-                      <div className="text-xs text-gray-400">{label}</div>
-                    </div>
-                  </div>
-                ))}
+        {/* WCA Profile — real-world competition results, kept visually distinct
+            from the in-app stats (championship badges, records, podium counts). */}
+        {profile.wcaId && (() => {
+          const wcaBadges = [
+            ...computeChampionshipBadges(championships),
+            ...computeRecordBadge(championships?.recordTier),
+          ];
+          const medals = championships?.medals;
+          const hasMedals = !!medals && medals.gold + medals.silver + medals.bronze > 0;
+          return (
+            <div className="card mb-6 border border-sky-500/30 bg-gradient-to-br from-sky-950/30 to-transparent">
+              <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xl font-bold">WCA Profile</h2>
+                  <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-semibold">
+                    Official
+                  </span>
+                </div>
+                <a
+                  href={`https://www.worldcubeassociation.org/persons/${profile.wcaId}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sm font-mono text-sky-300 hover:text-sky-200"
+                  title="View WCA profile"
+                >
+                  {profile.wcaId} ↗
+                </a>
               </div>
-              <p className="text-xs text-gray-500 mt-4">Official WCA competition results</p>
+
+              {wcaBadges.length > 0 && (
+                <div className="flex flex-wrap gap-3 mb-5">
+                  {wcaBadges.map((b) => (
+                    <div
+                      key={b.id}
+                      title={b.description}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800 ring-1 ${BADGE_RING[b.tier] || 'ring-gray-600'}`}
+                    >
+                      <span className="text-xl leading-none">{b.icon}</span>
+                      <span className="text-sm font-medium">{b.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {hasMedals && medals && (
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-300 mb-3">Competition Podiums</h3>
+                  <div className="flex gap-8">
+                    {([
+                      ['🥇', medals.gold, '1st place'],
+                      ['🥈', medals.silver, '2nd place'],
+                      ['🥉', medals.bronze, '3rd place'],
+                    ] as const).map(([icon, count, label]) => (
+                      <div key={label} className="flex items-center gap-3">
+                        <span className="text-3xl leading-none">{icon}</span>
+                        <div>
+                          <div className="text-2xl font-bold">{count}</div>
+                          <div className="text-xs text-gray-400">{label}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {wcaBadges.length === 0 && !hasMedals && (
+                <p className="text-gray-400 text-sm">No championship podiums or records yet.</p>
+              )}
             </div>
-          )}
+          );
+        })()}
 
         {/* Stats by Puzzle */}
         <div className="card mb-6">
