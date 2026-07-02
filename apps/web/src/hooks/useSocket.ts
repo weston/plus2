@@ -120,13 +120,18 @@ export function useSocket() {
         gamesPlayed?: number;
         gamesWon?: number;
       };
+      scores?: { you: number; opponent: number };
     }) => {
-      startMatch(data.matchId, {
-        ...data.opponent,
-        country: data.opponent.country || null,
-        gamesPlayed: data.opponent.gamesPlayed || 0,
-        gamesWon: data.opponent.gamesWon || 0,
-      });
+      startMatch(
+        data.matchId,
+        {
+          ...data.opponent,
+          country: data.opponent.country || null,
+          gamesPlayed: data.opponent.gamesPlayed || 0,
+          gamesWon: data.opponent.gamesWon || 0,
+        },
+        data.scores,
+      );
     });
 
     socket.on('round_start', (data: ServerEvents['round_start'] & {

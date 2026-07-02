@@ -91,7 +91,7 @@ interface GameState {
   joinQueue: () => void;
   leaveQueue: () => void;
   setQueueInfo: (position: number, estimatedWait: number) => void;
-  startMatch: (matchId: string, opponent: Opponent) => void;
+  startMatch: (matchId: string, opponent: Opponent, scores?: { you: number; opponent: number }) => void;
   startRound: (round: number, scramble: string, inspectionStartsAt: number, solveId?: string, inspectionStartServerMs?: number, inspectionEndServerMs?: number) => void;
   startSolve: (solveStartsAt: number) => void;
   addMyMove: (move: string) => void;
@@ -178,14 +178,16 @@ export const useGameStore = create<GameState>((set, get) => ({
   setQueueInfo: (queuePosition, estimatedWait) =>
     set({ queuePosition, estimatedWait }),
 
-  startMatch: (matchId, opponent) =>
+  startMatch: (matchId, opponent, scores) =>
     set({
       phase: 'matched',
       matchId,
       opponent,
       currentRound: 0,
-      myScore: 0,
-      opponentScore: 0,
+      // A reconnect mid-match re-emits match_found with the current score —
+      // restore it instead of resetting the scoreboard to 0-0.
+      myScore: scores?.you ?? 0,
+      opponentScore: scores?.opponent ?? 0,
     }),
 
   startRound: (currentRound, scramble, inspectionStartsAt, solveId, inspectionStartServerMs, inspectionEndServerMs) =>
@@ -313,8 +315,11 @@ export const useGameStore = create<GameState>((set, get) => ({
   scheduleOpponentMove: (solveId: string, seq: number, move: string, tMs: number, applyMoveCallback: (move: string) => void) => {
     const state = get();
 
-    // Verify this is for the current solve
-    if (state.solveId !== solveId) {
+    // Verify this is for the current solve. Only drop on a true mismatch:
+    // when we don't know our own solveId (a round_start that lacked it, e.g.
+    // an older server or a partial reconnect frame), apply the move anyway —
+    // dropping it would silently freeze the opponent's cube for the round.
+    if (state.solveId !== null && state.solveId !== solveId) {
       console.warn(`[SYNC] Ignoring move for old solve: ${solveId} (current: ${state.solveId})`);
       return;
     }

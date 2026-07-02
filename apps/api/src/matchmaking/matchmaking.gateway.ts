@@ -222,19 +222,98 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
                 league: opponentUser.league,
               },
               puzzleSize: match.puzzleSize,
+              // Current score from this player's perspective so a mid-match
+              // rejoin doesn't reset the displayed score to 0-0.
+              scores: {
+                you: isPlayer1 ? match.player1Score : match.player2Score,
+                opponent: isPlayer1 ? match.player2Score : match.player1Score,
+              },
             });
 
-            // If there's an active round, send round_start
+            // If there's an active round, resync the full round state. This
+            // frame must mirror what the live startRound/move path sends —
+            // in particular it MUST carry solveId, because the client drops
+            // any opponent_move whose solveId doesn't match its own. The old
+            // partial frame here left rejoining players with solveId=null and
+            // a permanently frozen opponent cube.
             if (matchState.currentRound > 0 && match.solves?.length > 0) {
               const currentSolve = match.solves.find(s => s.roundNumber === matchState.currentRound);
               if (currentSolve) {
+                const solveId: SolveId = `${matchId}:${matchState.currentRound}`;
                 socket.emit('round_start', {
                   round: matchState.currentRound,
                   scramble: currentSolve.scramble,
-                  inspectionStartsAt: Date.now(), // Already in progress
+                  inspectionStartsAt: matchState.inspectionStartServerMs ?? Date.now(),
+                  inspectionStartServerMs: matchState.inspectionStartServerMs,
+                  inspectionEndServerMs: matchState.inspectionEndServerMs,
+                  solveId,
                 });
-                // Also send inspection_end immediately since they're rejoining mid-round
-                socket.emit('inspection_end', { solveStartsAt: Date.now() });
+
+                const mySolveStartServerMs = isPlayer1
+                  ? matchState.player1SolveStartServerMs
+                  : matchState.player2SolveStartServerMs;
+                const opponentSolveStartServerMs = isPlayer1
+                  ? matchState.player2SolveStartServerMs
+                  : matchState.player1SolveStartServerMs;
+
+                // Only flip the client into the solve phase if inspection has
+                // actually ended — the old unconditional inspection_end cut a
+                // rejoining player's inspection short. If inspection is still
+                // running, the match's inspectionTimer will notify this socket
+                // when it fires (it looks sockets up dynamically by userId).
+                if (
+                  matchState.inspectionEndServerMs &&
+                  Date.now() >= matchState.inspectionEndServerMs
+                ) {
+                  socket.emit('inspection_end', {
+                    solveStartsAt: matchState.inspectionEndServerMs,
+                    solveStartServerMs: matchState.inspectionEndServerMs,
+                    solveId,
+                  });
+                }
+
+                if (mySolveStartServerMs) {
+                  socket.emit('solve_start', {
+                    solveId,
+                    solveStartServerMs: mySolveStartServerMs,
+                    inspectionStartServerMs: matchState.inspectionStartServerMs,
+                    inspectionEndServerMs: matchState.inspectionEndServerMs,
+                  });
+                }
+
+                if (opponentSolveStartServerMs) {
+                  socket.emit('opponent_solve_start', {
+                    solveId,
+                    solveStartServerMs: opponentSolveStartServerMs,
+                    inspectionStartServerMs: matchState.inspectionStartServerMs,
+                    inspectionEndServerMs: matchState.inspectionEndServerMs,
+                  });
+                }
+
+                // Replay the opponent's moves made so far this round so their
+                // cube isn't blank for the rejoining player. clientTs was
+                // stored as solveStart + tMs, so invert it to recover tMs;
+                // past-due moves apply immediately on the client, in order.
+                const opponentMoves = (isPlayer1 ? currentSolve.p2Moves : currentSolve.p1Moves) || [];
+                for (const m of opponentMoves) {
+                  socket.emit('opponent_move', {
+                    solveId,
+                    seq: m.seq,
+                    move: m.move,
+                    tMs: opponentSolveStartServerMs ? m.clientTs - opponentSolveStartServerMs : 0,
+                  });
+                }
+
+                // If the opponent already finished this round, send their time.
+                const opponentStatus = isPlayer1 ? currentSolve.p2Status : currentSolve.p1Status;
+                const opponentTimeMs = isPlayer1 ? currentSolve.p2TimeMs : currentSolve.p1TimeMs;
+                if (opponentStatus === 'completed' && opponentTimeMs != null) {
+                  socket.emit('opponent_done', { timeMs: opponentTimeMs });
+                }
+
+                console.log(
+                  `[SYNC] Rejoin resync: ${solveId}, user=${socket.userId}, replayedOpponentMoves=${opponentMoves.length}`,
+                );
               }
             }
           }
@@ -248,10 +327,22 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   }
 
   handleDisconnect(socket: AuthenticatedSocket) {
+    // Each page mounts its own socket, so navigation (e.g. /challenge → /match)
+    // disconnects the old socket and connects a new one. If the new socket's
+    // connection was processed first, this disconnect is for a STALE socket of
+    // a user who is still here — skip the destructive cleanup (challenge
+    // deletion and the match abandon timer, which would otherwise forfeit a
+    // still-connected player 30s later with nothing left to cancel it).
+    const hasOtherLiveSocket = socket.userId
+      ? !!this.findOtherSocketByUserId(socket.userId, socket.id)
+      : false;
+
     // Remove from queue and delete any pending challenges
     if (socket.userId) {
       this.matchmakingService.removeFromQueue(socket.userId);
-      this.matchmakingService.deleteChallengeByCreator(socket.userId);
+      if (!hasOtherLiveSocket) {
+        this.matchmakingService.deleteChallengeByCreator(socket.userId);
+      }
     }
 
     // Handle ghost race disconnect - treat as abandon (forfeit)
@@ -266,7 +357,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     }
 
     // Handle match disconnect - notify opponent if they're still connected
-    if (socket.matchId && socket.userId) {
+    if (socket.matchId && socket.userId && !hasOtherLiveSocket) {
       const match = this.activeMatches.get(socket.matchId);
       if (match) {
         const isPlayer1 = socket.userId === match.player1Id;
@@ -614,6 +705,28 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       return;
     }
 
+    // Resolve the creator's CURRENT socket by user id — the socket id captured
+    // at challenge creation goes stale if the creator's page reconnected while
+    // waiting for the friend to join.
+    const creatorSocket = this.findSocketByUserId(challenge.creatorId) as
+      | AuthenticatedSocket
+      | undefined;
+    if (!creatorSocket) {
+      this.matchmakingService.deleteChallenge(data.code);
+      socket.emit('error', {
+        code: 'CHALLENGE_NOT_FOUND',
+        message: 'Challenge creator is no longer online',
+      });
+      return;
+    }
+    if (creatorSocket.matchId) {
+      socket.emit('error', {
+        code: 'CHALLENGE_NOT_FOUND',
+        message: 'Challenge creator is currently in another match',
+      });
+      return;
+    }
+
     // Get joiner's info
     const joinerStats = await this.matchmakingService.addToQueue(
       socket.userId,
@@ -630,7 +743,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // Create the match
     const creatorEntry: QueueEntry = {
       userId: challenge.creatorId,
-      socketId: challenge.creatorSocketId,
+      socketId: creatorSocket.id,
       puzzleSize: challenge.puzzleSize,
       mmr: challenge.creatorMmr,
       searchRange: 0,
@@ -1360,11 +1473,16 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       puzzleSize,
     );
 
-    // Find sockets using socketId from queue entry
+    // Find sockets using socketId from queue entry, falling back to a lookup
+    // by userId — the recorded socketId goes stale if that player's page
+    // reconnected (e.g. navigation) after joining the queue / creating the
+    // challenge, but the user may well still be connected on a new socket.
     // Cast sockets to Map since TypeScript types are incorrect for namespace
     const socketsMap = this.server?.sockets as unknown as Map<string, Socket>;
-    const p1Socket = socketsMap?.get(player1.socketId) as AuthenticatedSocket;
-    const p2Socket = socketsMap?.get(player2.socketId) as AuthenticatedSocket;
+    const p1Socket = (socketsMap?.get(player1.socketId) ??
+      this.findSocketByUserId(player1.userId)) as AuthenticatedSocket;
+    const p2Socket = (socketsMap?.get(player2.socketId) ??
+      this.findSocketByUserId(player2.userId)) as AuthenticatedSocket;
 
     if (!p1Socket || !p2Socket) {
       console.error('Could not find sockets for matched players', {
@@ -1866,6 +1984,24 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const socketsMap = this.server.sockets as unknown as Map<string, Socket>;
     for (const [, socket] of socketsMap) {
       if ((socket as AuthenticatedSocket).userId === userId) {
+        return socket;
+      }
+    }
+    return undefined;
+  }
+
+  // Find a LIVE socket for this user other than the given one. Used to detect
+  // that a disconnecting socket is stale (the user already reconnected).
+  private findOtherSocketByUserId(userId: string, excludeSocketId: string): Socket | undefined {
+    if (!this.server) return undefined;
+
+    const socketsMap = this.server.sockets as unknown as Map<string, Socket>;
+    for (const [, socket] of socketsMap) {
+      if (
+        (socket as AuthenticatedSocket).userId === userId &&
+        socket.id !== excludeSocketId &&
+        socket.connected
+      ) {
         return socket;
       }
     }

@@ -209,8 +209,9 @@ export interface ClientEvents {
   queue_join: { puzzleSize: PuzzleSize };
   queue_leave: Record<string, never>;
   ready: Record<string, never>;
-  move: { seq: number; move: string; clientTs: number };
-  solve_complete: Record<string, never>;
+  // tMs is relative to the player's solve start (0 during inspection)
+  move: { seq: number; move: string; tMs: number };
+  solve_complete: { timeMs: number | null };
   rematch: Record<string, never>;
   requeue: Record<string, never>;
 }
@@ -228,19 +229,40 @@ export interface ServerEvents {
       league: LeagueTier;
     };
     puzzleSize: PuzzleSize;
+    // Present on reconnect resyncs: the current score from the receiving
+    // player's perspective.
+    scores?: { you: number; opponent: number };
   };
   round_start: {
     round: number;
     scramble: string;
     inspectionStartsAt: number; // server timestamp
+    solveId?: string; // `${matchId}:${round}` — opponent_move events are tagged with this
+    inspectionStartServerMs?: number;
+    inspectionEndServerMs?: number;
   };
   inspection_end: {
     solveStartsAt: number; // server timestamp
+    solveStartServerMs?: number;
+    solveId?: string;
+  };
+  solve_start: {
+    solveId: string;
+    solveStartServerMs: number;
+    inspectionStartServerMs?: number;
+    inspectionEndServerMs?: number;
+  };
+  opponent_solve_start: {
+    solveId: string;
+    solveStartServerMs: number;
+    inspectionStartServerMs?: number;
+    inspectionEndServerMs?: number;
   };
   opponent_move: {
+    solveId?: string;
     seq: number;
     move: string;
-    serverTs: number;
+    tMs?: number; // relative to the opponent's solve start
   };
   opponent_ready: Record<string, never>;
   opponent_done: {
