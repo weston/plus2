@@ -2,23 +2,108 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --foreground-rgb: 255, 255, 255;
-  --background-start-rgb: 15, 23, 42;
-  --background-end-rgb: 30, 41, 59;
+/* ============================================================================
+   THEME SYSTEM
+   Four switchable looks, driven by [data-theme] on <html>. The shared component
+   classes (.card / .btn / .input) + body background read from CSS variables, so
+   flipping the attribute restyles the whole app. Switcher: ThemeSwitcher.tsx.
+   ========================================================================== */
+
+/* Default = Premium */
+:root,
+[data-theme='premium'] {
+  --bg:
+    radial-gradient(900px 500px at 50% -20%, rgba(124, 92, 255, 0.12), transparent 70%),
+    #0a0a0f;
+  --text: #ececf2;
+  --text-muted: #8a8a99;
+  --card-bg: #14141c;
+  --card-border: rgba(255, 255, 255, 0.08);
+  --card-radius: 16px;
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 30px rgba(0, 0, 0, 0.45);
+  --card-blur: none;
+  --surface-2: #1c1c26;
+  --surface-2-border: rgba(255, 255, 255, 0.08);
+  --accent: #7c5cff;
+  --accent-hover: #6a4af0;
+  --accent-contrast: #ffffff;
+  --accent-glow: 0 8px 24px rgba(124, 92, 255, 0.35);
+  --btn-radius: 10px;
+}
+
+/* Glassmorphism — frosted cards over a colour-mesh gradient */
+[data-theme='glass'] {
+  --bg:
+    radial-gradient(at 18% 18%, rgba(124, 92, 255, 0.38), transparent 50%),
+    radial-gradient(at 82% 4%, rgba(34, 211, 238, 0.32), transparent 46%),
+    radial-gradient(at 62% 86%, rgba(236, 72, 153, 0.24), transparent 46%),
+    #0a0a14;
+  --text: #f5f7fb;
+  --text-muted: rgba(255, 255, 255, 0.62);
+  --card-bg: rgba(255, 255, 255, 0.06);
+  --card-border: rgba(255, 255, 255, 0.16);
+  --card-radius: 18px;
+  --card-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+  --card-blur: blur(16px) saturate(125%);
+  --surface-2: rgba(255, 255, 255, 0.09);
+  --surface-2-border: rgba(255, 255, 255, 0.18);
+  --accent: #22d3ee;
+  --accent-hover: #06b6d4;
+  --accent-contrast: #04121a;
+  --accent-glow: 0 8px 26px rgba(34, 211, 238, 0.45);
+  --btn-radius: 12px;
+}
+
+/* Minimal — flat, hairline borders, lime accent, no glow */
+[data-theme='minimal'] {
+  --bg: #0b0b0c;
+  --text: #fafafa;
+  --text-muted: #7a7a7e;
+  --card-bg: #141416;
+  --card-border: rgba(255, 255, 255, 0.07);
+  --card-radius: 8px;
+  --card-shadow: none;
+  --card-blur: none;
+  --surface-2: #1a1a1d;
+  --surface-2-border: rgba(255, 255, 255, 0.09);
+  --accent: #c7f94b;
+  --accent-hover: #b6ec33;
+  --accent-contrast: #14160a;
+  --accent-glow: none;
+  --btn-radius: 8px;
+}
+
+/* Neon — deep blue-black with cyan edge-glow */
+[data-theme='neon'] {
+  --bg:
+    radial-gradient(800px 420px at 50% -10%, rgba(0, 229, 255, 0.12), transparent 60%),
+    radial-gradient(620px 320px at 92% 8%, rgba(255, 45, 155, 0.12), transparent 60%),
+    #0b0e18;
+  --text: #eaf6ff;
+  --text-muted: #7b8aa8;
+  --card-bg: #0f1320;
+  --card-border: rgba(0, 229, 255, 0.22);
+  --card-radius: 14px;
+  --card-shadow: 0 0 0 1px rgba(0, 229, 255, 0.05), 0 0 26px rgba(0, 229, 255, 0.09), 0 10px 30px rgba(0, 0, 0, 0.5);
+  --card-blur: none;
+  --surface-2: #141a2b;
+  --surface-2-border: rgba(0, 229, 255, 0.2);
+  --accent: #00e5ff;
+  --accent-hover: #19ecff;
+  --accent-contrast: #04141a;
+  --accent-glow: 0 0 18px rgba(0, 229, 255, 0.55), 0 0 4px rgba(0, 229, 255, 0.8);
+  --btn-radius: 10px;
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-    to bottom,
-    rgb(var(--background-start-rgb)),
-    rgb(var(--background-end-rgb))
-  );
+  color: var(--text);
+  background: var(--bg);
+  background-attachment: fixed;
   min-height: 100vh;
+  transition: background 0.3s ease, color 0.3s ease;
 }
 
-/* League badge colors */
+/* ---- League badge colors (semantic, theme-independent) ---- */
 .league-bronze { @apply bg-[#CD7F32] text-black; }
 .league-silver { @apply bg-[#C0C0C0] text-black; }
 .league-gold { @apply bg-[#FFD700] text-black; }
@@ -27,59 +112,80 @@ body {
 .league-master { @apply bg-[#FF6B6B] text-white; }
 .league-grandmaster { @apply bg-[#9B59B6] text-white; }
 
-/* Timer styling */
+/* ---- Timer / scramble (monospace) ---- */
 .timer {
   font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
   font-variant-numeric: tabular-nums;
 }
-
-/* Cube container */
-.cube-container {
-  @apply relative rounded-lg overflow-hidden;
-  background: rgba(0, 0, 0, 0.3);
-}
-
-/* Scramble text */
 .scramble-text {
   font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
   @apply text-lg tracking-wide;
 }
 
-/* Button styles */
+/* ---- Cube container ---- */
+.cube-container {
+  @apply relative rounded-lg overflow-hidden;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* ---- Buttons ---- */
 .btn {
-  @apply px-4 py-2 rounded-lg font-semibold transition-all duration-200;
+  @apply px-4 py-2 font-semibold transition-all duration-200;
+  border-radius: var(--btn-radius);
 }
-
 .btn-primary {
-  @apply bg-blue-600 hover:bg-blue-700 text-white;
+  background: var(--accent);
+  color: var(--accent-contrast);
 }
-
+.btn-primary:hover {
+  background: var(--accent-hover);
+  box-shadow: var(--accent-glow);
+}
 .btn-secondary {
-  @apply bg-gray-600 hover:bg-gray-700 text-white;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--surface-2-border);
 }
+.btn-secondary:hover { filter: brightness(1.18); }
+.btn-success { @apply bg-green-600 hover:bg-green-700 text-white; }
+.btn-danger { @apply bg-red-600 hover:bg-red-700 text-white; }
 
-.btn-success {
-  @apply bg-green-600 hover:bg-green-700 text-white;
-}
-
-.btn-danger {
-  @apply bg-red-600 hover:bg-red-700 text-white;
-}
-
-/* Input styles */
+/* ---- Inputs ---- */
 .input {
-  @apply w-full px-4 py-2 rounded-lg bg-gray-800 border border-gray-700
-         text-white placeholder-gray-400 focus:outline-none focus:border-blue-500
-         focus:ring-1 focus:ring-blue-500;
+  @apply w-full px-4 py-2 focus:outline-none;
+  border-radius: var(--btn-radius);
+  background: var(--surface-2);
+  border: 1px solid var(--surface-2-border);
+  color: var(--text);
 }
+.input::placeholder { color: var(--text-muted); }
+.input:focus { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 
-/* Card styles */
+/* ---- Card ---- */
 .card {
-  @apply bg-gray-800/50 backdrop-blur-sm rounded-xl p-6 border border-gray-700/50;
+  @apply p-6;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  -webkit-backdrop-filter: var(--card-blur);
+  backdrop-filter: var(--card-blur);
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
-/* Keybinding key display */
+/* ---- Keybinding key display ---- */
 .key-badge {
-  @apply inline-flex items-center justify-center min-w-[2rem] h-8 px-2
-         bg-gray-700 rounded border border-gray-600 font-mono text-sm;
+  @apply inline-flex items-center justify-center min-w-[2rem] h-8 px-2 rounded font-mono text-sm;
+  background: var(--surface-2);
+  border: 1px solid var(--surface-2-border);
 }
+
+/* ---- Map the app's primary blue to the active theme accent ----
+   Most CTAs/links use blue-600/500/400; remap so the accent follows the theme. */
+.bg-blue-600 { background-color: var(--accent) !important; color: var(--accent-contrast) !important; }
+.hover\:bg-blue-700:hover { background-color: var(--accent-hover) !important; }
+.text-blue-600,
+.text-blue-500,
+.text-blue-400,
+.text-blue-300 { color: var(--accent) !important; }
+.border-blue-500 { border-color: var(--accent) !important; }
