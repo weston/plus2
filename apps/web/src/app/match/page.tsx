@@ -101,7 +101,7 @@ export default function MatchPage() {
     solveId,
   } = useGameStore();
 
-  const { sendMove, sendSolveComplete, sendRematch, sendRequeue } = useSocket();
+  const { sendMove, sendSolveComplete, sendRematch, sendRequeue, sendMatchRejoin, sendMatchLeave } = useSocket();
   const moveSeqRef = useRef(0);
   const cubeRef = useRef<TwistyCubeHandle>(null);
   // Synchronous guard so two keydowns in the same frame can't both start the
@@ -123,6 +123,22 @@ export default function MatchPage() {
       router.push('/dashboard');
     }
   }, [matchId, phase, router]);
+
+  // Attach this page to any live match on mount (the shared socket survives
+  // navigation, so this replaces the old "new page = new connection = rejoin"
+  // flow), and detach when leaving mid-match so the server starts its abandon
+  // grace period. After the match is over there's nothing to abandon.
+  useEffect(() => {
+    sendMatchRejoin();
+    return () => {
+      const { phase: p, matchId: m } = useGameStore.getState();
+      const matchActive =
+        !!m && ['matched', 'inspecting', 'solving', 'waiting_opponent', 'round_complete'].includes(p);
+      if (matchActive) {
+        sendMatchLeave();
+      }
+    };
+  }, [sendMatchRejoin, sendMatchLeave]);
 
   // Reset state on new round
   useEffect(() => {

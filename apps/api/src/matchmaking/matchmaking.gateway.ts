@@ -186,144 +186,158 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       socket.username = payload.username;
 
       // Check if user has an active match and rejoin them
-      for (const [matchId, matchState] of this.activeMatches.entries()) {
-        if (matchState.player1Id === socket.userId || matchState.player2Id === socket.userId) {
-          socket.matchId = matchId;
-          socket.join(matchId);
-
-          // Cancel abandon timeout for this player
-          const isPlayer1 = matchState.player1Id === socket.userId;
-          if (isPlayer1 && matchState.player1AbandonTimeout) {
-            clearTimeout(matchState.player1AbandonTimeout);
-            matchState.player1AbandonTimeout = undefined;
-          } else if (!isPlayer1 && matchState.player2AbandonTimeout) {
-            clearTimeout(matchState.player2AbandonTimeout);
-            matchState.player2AbandonTimeout = undefined;
-          }
-
-          // Notify opponent that player reconnected
-          const opponentId = isPlayer1 ? matchState.player2Id : matchState.player1Id;
-          const opponentSocket = this.findSocketByUserId(opponentId);
-          opponentSocket?.emit('opponent_reconnect', {});
-
-          // Send current match state to the reconnected user
-          const match = await this.matchesService.getMatch(matchId);
-          if (match) {
-            const isPlayer1 = matchState.player1Id === socket.userId;
-            const opponentId = isPlayer1 ? matchState.player2Id : matchState.player1Id;
-            const opponentUser = match.player1.id === opponentId ? match.player1 : match.player2;
-
-            socket.emit('match_found', {
-              matchId,
-              opponent: {
-                id: opponentId,
-                username: opponentUser.username,
-                mmr: opponentUser.mmr,
-                league: opponentUser.league,
-              },
-              puzzleSize: match.puzzleSize,
-              // Current score from this player's perspective so a mid-match
-              // rejoin doesn't reset the displayed score to 0-0.
-              scores: {
-                you: isPlayer1 ? match.player1Score : match.player2Score,
-                opponent: isPlayer1 ? match.player2Score : match.player1Score,
-              },
-            });
-
-            // If there's an active round, resync the full round state. This
-            // frame must mirror what the live startRound/move path sends —
-            // in particular it MUST carry solveId, because the client drops
-            // any opponent_move whose solveId doesn't match its own. The old
-            // partial frame here left rejoining players with solveId=null and
-            // a permanently frozen opponent cube.
-            if (matchState.currentRound > 0 && match.solves?.length > 0) {
-              const currentSolve = match.solves.find(s => s.roundNumber === matchState.currentRound);
-              if (currentSolve) {
-                const solveId: SolveId = `${matchId}:${matchState.currentRound}`;
-                socket.emit('round_start', {
-                  round: matchState.currentRound,
-                  scramble: currentSolve.scramble,
-                  inspectionStartsAt: matchState.inspectionStartServerMs ?? Date.now(),
-                  inspectionStartServerMs: matchState.inspectionStartServerMs,
-                  inspectionEndServerMs: matchState.inspectionEndServerMs,
-                  solveId,
-                });
-
-                const mySolveStartServerMs = isPlayer1
-                  ? matchState.player1SolveStartServerMs
-                  : matchState.player2SolveStartServerMs;
-                const opponentSolveStartServerMs = isPlayer1
-                  ? matchState.player2SolveStartServerMs
-                  : matchState.player1SolveStartServerMs;
-
-                // Only flip the client into the solve phase if inspection has
-                // actually ended — the old unconditional inspection_end cut a
-                // rejoining player's inspection short. If inspection is still
-                // running, the match's inspectionTimer will notify this socket
-                // when it fires (it looks sockets up dynamically by userId).
-                if (
-                  matchState.inspectionEndServerMs &&
-                  Date.now() >= matchState.inspectionEndServerMs
-                ) {
-                  socket.emit('inspection_end', {
-                    solveStartsAt: matchState.inspectionEndServerMs,
-                    solveStartServerMs: matchState.inspectionEndServerMs,
-                    solveId,
-                  });
-                }
-
-                if (mySolveStartServerMs) {
-                  socket.emit('solve_start', {
-                    solveId,
-                    solveStartServerMs: mySolveStartServerMs,
-                    inspectionStartServerMs: matchState.inspectionStartServerMs,
-                    inspectionEndServerMs: matchState.inspectionEndServerMs,
-                  });
-                }
-
-                if (opponentSolveStartServerMs) {
-                  socket.emit('opponent_solve_start', {
-                    solveId,
-                    solveStartServerMs: opponentSolveStartServerMs,
-                    inspectionStartServerMs: matchState.inspectionStartServerMs,
-                    inspectionEndServerMs: matchState.inspectionEndServerMs,
-                  });
-                }
-
-                // Replay the opponent's moves made so far this round so their
-                // cube isn't blank for the rejoining player. clientTs was
-                // stored as solveStart + tMs, so invert it to recover tMs;
-                // past-due moves apply immediately on the client, in order.
-                const opponentMoves = (isPlayer1 ? currentSolve.p2Moves : currentSolve.p1Moves) || [];
-                for (const m of opponentMoves) {
-                  socket.emit('opponent_move', {
-                    solveId,
-                    seq: m.seq,
-                    move: m.move,
-                    tMs: opponentSolveStartServerMs ? m.clientTs - opponentSolveStartServerMs : 0,
-                  });
-                }
-
-                // If the opponent already finished this round, send their time.
-                const opponentStatus = isPlayer1 ? currentSolve.p2Status : currentSolve.p1Status;
-                const opponentTimeMs = isPlayer1 ? currentSolve.p2TimeMs : currentSolve.p1TimeMs;
-                if (opponentStatus === 'completed' && opponentTimeMs != null) {
-                  socket.emit('opponent_done', { timeMs: opponentTimeMs });
-                }
-
-                console.log(
-                  `[SYNC] Rejoin resync: ${solveId}, user=${socket.userId}, replayedOpponentMoves=${opponentMoves.length}`,
-                );
-              }
-            }
-          }
-          break;
-        }
-      }
+      await this.attachAndResyncMatch(socket);
     } catch (error) {
       socket.emit('error', { code: 'AUTH_INVALID', message: 'Invalid authentication' });
       socket.disconnect();
     }
+  }
+
+  /**
+   * Attach this socket to the user's active match (if any) and send the full
+   * match/round state. Used on every new connection and on explicit
+   * `match_rejoin` requests (the match page re-attaching after navigation on
+   * the app's shared socket).
+   *
+   * The resync frame must mirror what the live startRound/move path sends —
+   * in particular it MUST carry solveId, because the client drops any
+   * opponent_move whose solveId doesn't match its own. An older partial frame
+   * here left rejoining players with solveId=null and a permanently frozen
+   * opponent cube.
+   */
+  private async attachAndResyncMatch(socket: AuthenticatedSocket): Promise<boolean> {
+    if (!socket.userId) return false;
+
+    for (const [matchId, matchState] of this.activeMatches.entries()) {
+      if (matchState.player1Id !== socket.userId && matchState.player2Id !== socket.userId) {
+        continue;
+      }
+
+      socket.matchId = matchId;
+      socket.join(matchId);
+
+      // Cancel abandon timeout for this player
+      const isPlayer1 = matchState.player1Id === socket.userId;
+      if (isPlayer1 && matchState.player1AbandonTimeout) {
+        clearTimeout(matchState.player1AbandonTimeout);
+        matchState.player1AbandonTimeout = undefined;
+      } else if (!isPlayer1 && matchState.player2AbandonTimeout) {
+        clearTimeout(matchState.player2AbandonTimeout);
+        matchState.player2AbandonTimeout = undefined;
+      }
+
+      // Notify opponent that player is (back) in the match
+      const opponentId = isPlayer1 ? matchState.player2Id : matchState.player1Id;
+      const opponentSocket = this.findSocketByUserId(opponentId);
+      opponentSocket?.emit('opponent_reconnect', {});
+
+      // Send current match state to the (re)joining user
+      const match = await this.matchesService.getMatch(matchId);
+      if (match) {
+        const opponentUser = match.player1.id === opponentId ? match.player1 : match.player2;
+
+        socket.emit('match_found', {
+          matchId,
+          opponent: {
+            id: opponentId,
+            username: opponentUser.username,
+            mmr: opponentUser.mmr,
+            league: opponentUser.league,
+          },
+          puzzleSize: match.puzzleSize,
+          // Current score from this player's perspective so a mid-match
+          // rejoin doesn't reset the displayed score to 0-0.
+          scores: {
+            you: isPlayer1 ? match.player1Score : match.player2Score,
+            opponent: isPlayer1 ? match.player2Score : match.player1Score,
+          },
+        });
+
+        // If there's an active round, resync the full round state.
+        if (matchState.currentRound > 0 && match.solves?.length > 0) {
+          const currentSolve = match.solves.find(s => s.roundNumber === matchState.currentRound);
+          if (currentSolve) {
+            const solveId: SolveId = `${matchId}:${matchState.currentRound}`;
+            socket.emit('round_start', {
+              round: matchState.currentRound,
+              scramble: currentSolve.scramble,
+              inspectionStartsAt: matchState.inspectionStartServerMs ?? Date.now(),
+              inspectionStartServerMs: matchState.inspectionStartServerMs,
+              inspectionEndServerMs: matchState.inspectionEndServerMs,
+              solveId,
+            });
+
+            const mySolveStartServerMs = isPlayer1
+              ? matchState.player1SolveStartServerMs
+              : matchState.player2SolveStartServerMs;
+            const opponentSolveStartServerMs = isPlayer1
+              ? matchState.player2SolveStartServerMs
+              : matchState.player1SolveStartServerMs;
+
+            // Only flip the client into the solve phase if inspection has
+            // actually ended — an unconditional inspection_end would cut a
+            // rejoining player's inspection short. If inspection is still
+            // running, the match's inspectionTimer will notify this socket
+            // when it fires (it looks sockets up dynamically by userId).
+            if (
+              matchState.inspectionEndServerMs &&
+              Date.now() >= matchState.inspectionEndServerMs
+            ) {
+              socket.emit('inspection_end', {
+                solveStartsAt: matchState.inspectionEndServerMs,
+                solveStartServerMs: matchState.inspectionEndServerMs,
+                solveId,
+              });
+            }
+
+            if (mySolveStartServerMs) {
+              socket.emit('solve_start', {
+                solveId,
+                solveStartServerMs: mySolveStartServerMs,
+                inspectionStartServerMs: matchState.inspectionStartServerMs,
+                inspectionEndServerMs: matchState.inspectionEndServerMs,
+              });
+            }
+
+            if (opponentSolveStartServerMs) {
+              socket.emit('opponent_solve_start', {
+                solveId,
+                solveStartServerMs: opponentSolveStartServerMs,
+                inspectionStartServerMs: matchState.inspectionStartServerMs,
+                inspectionEndServerMs: matchState.inspectionEndServerMs,
+              });
+            }
+
+            // Replay the opponent's moves made so far this round so their
+            // cube isn't blank for the rejoining player. clientTs was
+            // stored as solveStart + tMs, so invert it to recover tMs;
+            // past-due moves apply immediately on the client, in order.
+            const opponentMoves = (isPlayer1 ? currentSolve.p2Moves : currentSolve.p1Moves) || [];
+            for (const m of opponentMoves) {
+              socket.emit('opponent_move', {
+                solveId,
+                seq: m.seq,
+                move: m.move,
+                tMs: opponentSolveStartServerMs ? m.clientTs - opponentSolveStartServerMs : 0,
+              });
+            }
+
+            // If the opponent already finished this round, send their time.
+            const opponentStatus = isPlayer1 ? currentSolve.p2Status : currentSolve.p1Status;
+            const opponentTimeMs = isPlayer1 ? currentSolve.p2TimeMs : currentSolve.p1TimeMs;
+            if (opponentStatus === 'completed' && opponentTimeMs != null) {
+              socket.emit('opponent_done', { timeMs: opponentTimeMs });
+            }
+
+            console.log(
+              `[SYNC] Rejoin resync: ${solveId}, user=${socket.userId}, replayedOpponentMoves=${opponentMoves.length}`,
+            );
+          }
+        }
+      }
+      return true;
+    }
+    return false;
   }
 
   handleDisconnect(socket: AuthenticatedSocket) {
@@ -450,6 +464,61 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (socket.userId) {
       this.matchmakingService.removeFromQueue(socket.userId);
       socket.emit('queue_left', {});
+    }
+  }
+
+  /**
+   * The match page attaches itself to any live match on mount. With the
+   * client's shared socket, returning to /match is no longer a fresh
+   * connection, so this replaces the connection-time rejoin in that flow.
+   */
+  @SubscribeMessage('match_rejoin')
+  async handleMatchRejoin(@ConnectedSocket() socket: AuthenticatedSocket) {
+    if (!socket.userId) return;
+    // Already attached — either the live match flow set matchId on this
+    // socket, or the connection handler just resynced it (page reload). Skip
+    // so a mount-time rejoin can't duplicate the resync frame.
+    if (socket.matchId && this.activeMatches.has(socket.matchId)) return;
+    await this.attachAndResyncMatch(socket);
+  }
+
+  /**
+   * The match page detaches when it unmounts mid-match (user navigated away).
+   * Mirrors the disconnect path: notify the opponent and start the abandon
+   * grace period — cancelled if the player returns (match_rejoin) before it
+   * fires, otherwise the match is forfeited.
+   */
+  @SubscribeMessage('match_leave')
+  handleMatchLeave(@ConnectedSocket() socket: AuthenticatedSocket) {
+    if (!socket.matchId || !socket.userId) return;
+
+    const matchId = socket.matchId;
+    const match = this.activeMatches.get(matchId);
+
+    // Detach the socket from the match regardless of state.
+    socket.leave(matchId);
+    socket.matchId = undefined;
+    socket.playerNumber = undefined;
+
+    if (!match) return;
+
+    const isPlayer1 = socket.userId === match.player1Id;
+    const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
+    this.findSocketByUserId(opponentId)?.emit('opponent_disconnect', {});
+
+    const forfeitingUserId = socket.userId;
+    const abandonTimeout = setTimeout(async () => {
+      if (this.activeMatches.get(matchId)) {
+        await this.handleForfeit(matchId, forfeitingUserId);
+      }
+    }, 30000); // Same 30 second grace period as a disconnect
+
+    if (isPlayer1) {
+      if (match.player1AbandonTimeout) clearTimeout(match.player1AbandonTimeout);
+      match.player1AbandonTimeout = abandonTimeout;
+    } else {
+      if (match.player2AbandonTimeout) clearTimeout(match.player2AbandonTimeout);
+      match.player2AbandonTimeout = abandonTimeout;
     }
   }
 

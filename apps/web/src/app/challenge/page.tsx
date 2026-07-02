@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
 import { useGameStore } from '@/stores/game';
+import { useChallengeStore } from '@/stores/challenge';
 import { useSocket } from '@/hooks/useSocket';
 import type { PuzzleSize } from '@plus2/shared';
 
@@ -44,6 +45,18 @@ function ChallengeContent() {
       router.push('/match');
     }
   }, [phase, router]);
+
+  // The socket now survives navigation, so leaving this page no longer
+  // implicitly cancels a pending challenge via a disconnect — do it
+  // explicitly. When the match starts, the challenge store is cleared before
+  // the /match navigation, so this is a no-op in that path.
+  useEffect(() => {
+    return () => {
+      if (useChallengeStore.getState().challenge) {
+        cancelChallenge();
+      }
+    };
+  }, [cancelChallenge]);
 
   const handleCreateChallenge = () => {
     createChallenge(selectedSize);

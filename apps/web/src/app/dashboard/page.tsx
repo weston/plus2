@@ -78,6 +78,17 @@ export default function DashboardPage() {
   // Clear the fallback timer on unmount.
   useEffect(() => () => clearFallback(), []);
 
+  // The socket now survives navigation, so leaving the dashboard no longer
+  // implicitly leaves the queue via a disconnect — do it explicitly. (Leaving
+  // because a match was found is fine: phase is 'matched' by then.)
+  useEffect(() => {
+    return () => {
+      if (useGameStore.getState().phase === 'queuing') {
+        leaveQueue();
+      }
+    };
+  }, [leaveQueue]);
+
   // One "Find Race": look for a live human, then fall back to a ghost so there's
   // always an opponent.
   const handleFindRace = () => {

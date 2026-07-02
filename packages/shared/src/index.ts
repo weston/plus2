@@ -209,6 +209,9 @@ export interface ClientEvents {
   queue_join: { puzzleSize: PuzzleSize };
   queue_leave: Record<string, never>;
   ready: Record<string, never>;
+  // Attach to / detach from the user's live match (match page mount/unmount).
+  match_rejoin: Record<string, never>;
+  match_leave: Record<string, never>;
   // tMs is relative to the player's solve start (0 during inspection)
   move: { seq: number; move: string; tMs: number };
   solve_complete: { timeMs: number | null };
