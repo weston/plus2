@@ -202,9 +202,10 @@ function GhostRaceContent() {
       // Only start timer if user didn't already start during inspection
       if (!timerRef.current) {
         solveStartTimeRef.current = race.solveStartsAt;
-        setMoves([]);
-        moveSeqRef.current = 0;
-        setMoveSeq(0);
+        // NOTE: do not reset moveSeqRef/moves here — inspection rotations are
+        // already applied to the cube and sent with their seq numbers, so the
+        // counter must stay continuous (resetting would also rewind the cube,
+        // erasing the user's rotations).
 
         let lastUpdate = 0;
         const updateTimer = (timestamp: number) => {

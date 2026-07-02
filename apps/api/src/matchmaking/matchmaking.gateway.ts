@@ -968,6 +968,16 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       session.solveTimeout = undefined;
     }
 
+    // Clear the round's inspection timer: the user can complete a solve while
+    // inspection is still pending (early start + fast solve), and the orphaned
+    // timer would fire a bogus inspection_end into the results screen or the
+    // NEXT round — flipping the client into "solving" with a running timer
+    // and, on the results screen, the just-solved cube still displayed.
+    if (session.inspectionTimer) {
+      clearTimeout(session.inspectionTimer);
+      session.inspectionTimer = undefined;
+    }
+
     // Sort moves by timestamp to ensure correct order
     // Store tMs (relative timestamp) for replay timing
     const moves = data?.moves
@@ -1034,6 +1044,13 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (session.solveTimeout) {
       clearTimeout(session.solveTimeout);
       session.solveTimeout = undefined;
+    }
+    // Never leave the previous round's inspection timer armed — overwriting
+    // the reference below would orphan it and it would fire a bogus
+    // inspection_end into this round.
+    if (session.inspectionTimer) {
+      clearTimeout(session.inspectionTimer);
+      session.inspectionTimer = undefined;
     }
 
     const solve = await this.soloService.startRound(sessionId, session.currentRound);
@@ -1221,6 +1238,14 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (race.solveTimeout) {
       clearTimeout(race.solveTimeout);
       race.solveTimeout = undefined;
+    }
+
+    // Clear the round's inspection timer — completing during inspection would
+    // otherwise leave it armed to fire a bogus inspection_end into the results
+    // screen or the next round (phantom running timer on a solved cube).
+    if (race.inspectionTimer) {
+      clearTimeout(race.inspectionTimer);
+      race.inspectionTimer = undefined;
     }
 
     // Calculate user's time
@@ -1440,6 +1465,13 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (race.solveTimeout) {
       clearTimeout(race.solveTimeout);
       race.solveTimeout = undefined;
+    }
+    // Never leave the previous round's inspection timer armed — overwriting
+    // the reference below would orphan it and it would fire a bogus
+    // inspection_end into this round.
+    if (race.inspectionTimer) {
+      clearTimeout(race.inspectionTimer);
+      race.inspectionTimer = undefined;
     }
 
     const ghostSolve = race.ghostSolves[race.currentRound - 1];
@@ -1748,7 +1780,11 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     p1Socket?.emit('round_start', roundData);
     p2Socket?.emit('round_start', roundData);
 
-    // Set timer for inspection end
+    // Set timer for inspection end (clearing any leftover one first so an
+    // orphaned timer can't fire a bogus inspection_end into this round)
+    if (matchState.inspectionTimer) {
+      clearTimeout(matchState.inspectionTimer);
+    }
     matchState.inspectionTimer = setTimeout(
       () => this.handleInspectionEnd(matchId),
       INSPECTION_DURATION_MS + 500, // Account for initial buffer

@@ -167,12 +167,18 @@ export function useGhostRaceSocket() {
     });
 
     socket.on('ghost_race_inspection_end', () => {
-      // Use local client time for timer display (server calculates final time)
-      setState((prev) => ({
-        ...prev,
-        phase: 'solving',
-        solveStartsAt: Date.now(),
-      }));
+      // Use local client time for timer display (server calculates final time).
+      // Only valid while inspecting — a stray/orphaned inspection_end (e.g.
+      // from a round completed early) must not flip a results screen or the
+      // next round into "solving" with a phantom running timer.
+      setState((prev) => {
+        if (prev.phase !== 'inspecting') return prev;
+        return {
+          ...prev,
+          phase: 'solving',
+          solveStartsAt: Date.now(),
+        };
+      });
     });
 
     socket.on('ghost_race_solve_result', (data: {
