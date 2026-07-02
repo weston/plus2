@@ -629,14 +629,20 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // Generate solveId for this solve
     const solveId: SolveId = `${socket.matchId}:${match.currentRound}`;
 
-    // Record move in database (convert tMs to clientTs for backward compatibility)
+    // Record move in database (convert tMs to clientTs for backward
+    // compatibility) WITHOUT blocking the relay — a database round-trip per
+    // move (RDS in production) must not sit in the opponent's latency path.
+    // recordMove's per-(match,round,player) lock keeps writes ordered, and
+    // this handler's synchronous section keeps the relays ordered.
     const clientTs = solveStartServerMs ? solveStartServerMs + data.tMs : serverTs;
-    await this.matchesService.recordMove(
-      socket.matchId,
-      match.currentRound,
-      socket.userId,
-      { seq: data.seq, move: data.move, clientTs, serverTs },
-    );
+    this.matchesService
+      .recordMove(socket.matchId, match.currentRound, socket.userId, {
+        seq: data.seq,
+        move: data.move,
+        clientTs,
+        serverTs,
+      })
+      .catch((e) => console.error('recordMove failed:', e));
 
     // Relay to opponent with relative timestamp for deterministic replay.
     // Route to the socket attached to this match — the opponent may have

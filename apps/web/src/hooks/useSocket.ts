@@ -202,8 +202,15 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
 
   // Handle my own solve start (server-authoritative)
   socket.on('solve_start', (data: ServerEvents['solve_start']) => {
-    // Record server time and local perf time for my solve
-    useGameStore.getState().setMySolveStart(data.solveStartServerMs, performance.now());
+    // Keep the FIRST local anchor (set when the first move was made): move
+    // timestamps (tMs) are produced against it, and re-anchoring to this
+    // event's arrival time makes tMs regress mid-burst, which scrambled the
+    // opponent-side replay order. Only anchor here if no move set one yet
+    // (e.g. the solve was started by inspection ending).
+    const game = useGameStore.getState();
+    if (game.myLocalSolveStartPerf === null) {
+      game.setMySolveStart(data.solveStartServerMs, performance.now());
+    }
   });
 
   // Handle opponent's solve start (for deterministic replay)
@@ -215,9 +222,7 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
     const game = useGameStore.getState();
     // Use deterministic scheduling if we have tMs (relative timestamp)
     if (data.solveId && data.tMs !== undefined) {
-      game.scheduleOpponentMove(data.solveId, data.seq, data.move, data.tMs, (move) => {
-        useGameStore.getState().addOpponentMove(move);
-      });
+      game.scheduleOpponentMove(data.solveId, data.seq, data.move, data.tMs);
     } else {
       // Fallback: apply immediately (legacy behavior)
       game.addOpponentMove(data.move);

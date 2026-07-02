@@ -24,13 +24,15 @@ interface Opponent {
   gamesWon: number;
 }
 
-// Scheduled move for deterministic replay
-interface ScheduledMove {
+// Queued opponent move for deterministic replay. Moves apply strictly in
+// arrival (seq) order via a single FIFO queue — independent per-move timers
+// could fire out of order when a move's relative timestamp regressed or
+// timers got throttled, and one transposition leaves the opponent's cube
+// permanently wrong.
+interface QueuedOpponentMove {
   seq: number;
   move: string;
-  tMs: number;
   targetPerfMs: number;
-  timeoutId?: ReturnType<typeof setTimeout>;
 }
 
 interface GameState {
@@ -70,8 +72,9 @@ interface GameState {
   opponentSolveStartServerMs: number | null;
   opponentLocalSolveStartPerf: number | null; // computed local perf time for opponent's solve start
 
-  // Scheduled opponent moves for deterministic replay
-  scheduledOpponentMoves: ScheduledMove[];
+  // Ordered opponent move queue for deterministic replay
+  opponentMoveQueue: QueuedOpponentMove[];
+  opponentQueueTimer: ReturnType<typeof setTimeout> | null;
   opponentMoveLog: Array<{ seq: number; tMs: number; arrivalPerf: number; targetPerf: number; lateness: number }>;
 
   // Legacy fields (for backward compatibility during transition)
@@ -110,7 +113,7 @@ interface GameState {
   // Deterministic replay actions
   setMySolveStart: (solveStartServerMs: number, localPerfMs: number) => void;
   setOpponentSolveStart: (solveStartServerMs: number) => void;
-  scheduleOpponentMove: (solveId: string, seq: number, move: string, tMs: number, applyMoveCallback: (move: string) => void) => void;
+  scheduleOpponentMove: (solveId: string, seq: number, move: string, tMs: number) => void;
   clearScheduledMoves: () => void;
 }
 
@@ -149,8 +152,9 @@ const initialState = {
   opponentSolveStartServerMs: null as number | null,
   opponentLocalSolveStartPerf: null as number | null,
 
-  // Scheduled moves
-  scheduledOpponentMoves: [] as ScheduledMove[],
+  // Ordered opponent move queue
+  opponentMoveQueue: [] as QueuedOpponentMove[],
+  opponentQueueTimer: null as ReturnType<typeof setTimeout> | null,
   opponentMoveLog: [] as Array<{ seq: number; tMs: number; arrivalPerf: number; targetPerf: number; lateness: number }>,
 
   // Legacy fields
@@ -164,7 +168,41 @@ const initialState = {
   newLeague: null as LeagueTier | null,
 };
 
-export const useGameStore = create<GameState>((set, get) => ({
+export const useGameStore = create<GameState>((set, get) => {
+  // Apply queued opponent moves strictly head-first: the head applies once
+  // its target time passes; everything behind it waits. Arrival order (which
+  // matches the solver's seq order — one ordered socket) can never be
+  // violated by timer scheduling.
+  const drainOpponentQueue = () => {
+    if (get().opponentQueueTimer) return; // head already scheduled
+
+    const queue = [...get().opponentMoveQueue];
+    const applied: string[] = [];
+    const now = performance.now();
+    while (queue.length && queue[0].targetPerfMs <= now) {
+      const m = queue.shift()!;
+      applied.push(m.move);
+      console.log(`[SYNC] Applied opponent move ${m.seq}: ${m.move}`);
+    }
+
+    if (applied.length) {
+      set((s) => ({
+        opponentMoves: [...s.opponentMoves, ...applied],
+        opponentMoveQueue: queue,
+      }));
+    }
+
+    if (queue.length) {
+      const delay = Math.max(0, queue[0].targetPerfMs - performance.now());
+      const timer = setTimeout(() => {
+        set({ opponentQueueTimer: null });
+        drainOpponentQueue();
+      }, delay);
+      set({ opponentQueueTimer: timer });
+    }
+  };
+
+  return {
   ...initialState,
 
   setPuzzleSize: (puzzleSize) => set({ puzzleSize }),
@@ -209,7 +247,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       myLocalSolveStartPerf: null,
       opponentSolveStartServerMs: null,
       opponentLocalSolveStartPerf: null,
-      scheduledOpponentMoves: [],
+      opponentMoveQueue: [],
       opponentMoveLog: [],
       // Legacy
       opponentSolveClientTs: null,
@@ -311,8 +349,9 @@ export const useGameStore = create<GameState>((set, get) => ({
     console.log(`[SYNC] Opponent solve start: solveId=${state.solveId}, solveStartServerMs=${solveStartServerMs}, opponentLocalSolveStartPerf=${opponentLocalSolveStartPerf}, serverOffsetMs=${state.serverOffsetMs}`);
   },
 
-  // Schedule opponent move for deterministic replay
-  scheduleOpponentMove: (solveId: string, seq: number, move: string, tMs: number, applyMoveCallback: (move: string) => void) => {
+  // Enqueue an opponent move for deterministic replay (applied in strict
+  // arrival order, paced by its relative timestamp)
+  scheduleOpponentMove: (solveId: string, seq: number, move: string, tMs: number) => {
     const state = get();
 
     // Verify this is for the current solve. Only drop on a true mismatch:
@@ -326,16 +365,16 @@ export const useGameStore = create<GameState>((set, get) => ({
 
     const arrivalPerf = performance.now();
 
-    // If opponent solve start isn't set yet, apply immediately (shouldn't happen in normal flow)
-    if (state.opponentLocalSolveStartPerf === null) {
-      console.warn(`[SYNC] Opponent solve start not set, applying move immediately: seq=${seq}`);
-      applyMoveCallback(move);
-      return;
-    }
+    // Without an anchor yet the timeline is unknown — apply as it arrives
+    // (target 0 = immediately, still in order behind anything queued).
+    const computedTarget =
+      state.opponentLocalSolveStartPerf === null ? 0 : state.opponentLocalSolveStartPerf + tMs;
 
-    // Calculate target time for this move
-    const targetPerf = state.opponentLocalSolveStartPerf + tMs;
-    const delay = targetPerf - arrivalPerf;
+    // Never target earlier than the move already queued behind — tMs can
+    // regress (e.g. produced against a re-anchored clock), and the queue must
+    // drain strictly in order.
+    const lastQueued = state.opponentMoveQueue[state.opponentMoveQueue.length - 1];
+    const targetPerf = Math.max(computedTarget, lastQueued ? lastQueued.targetPerfMs : 0);
     const lateness = arrivalPerf - targetPerf;
 
     // Log first 10 moves
@@ -346,34 +385,17 @@ export const useGameStore = create<GameState>((set, get) => ({
       console.log(`[SYNC] Move ${seq}: tMs=${tMs}, arrivalPerf=${arrivalPerf.toFixed(0)}, targetPerf=${targetPerf.toFixed(0)}, lateness=${lateness.toFixed(0)}ms`);
     }
 
-    if (delay <= 0) {
-      // Move is late, apply immediately
-      if (lateness > 100) {
-        console.warn(`[SYNC] Move ${seq} arrived ${lateness.toFixed(0)}ms late`);
-      }
-      applyMoveCallback(move);
-    } else {
-      // Schedule move for the future
-      const timeoutId = setTimeout(() => {
-        applyMoveCallback(move);
-        // Remove from scheduled list
-        set((s) => ({
-          scheduledOpponentMoves: s.scheduledOpponentMoves.filter((m) => m.seq !== seq),
-        }));
-      }, delay);
-
-      set((s) => ({
-        scheduledOpponentMoves: [...s.scheduledOpponentMoves, { seq, move, tMs, targetPerfMs: targetPerf, timeoutId }],
-      }));
-    }
+    set((s) => ({
+      opponentMoveQueue: [...s.opponentMoveQueue, { seq, move, targetPerfMs: targetPerf }],
+    }));
+    drainOpponentQueue();
   },
 
-  // Clear all scheduled moves (on round end or reset)
+  // Clear the pending opponent move queue (on round end or reset)
   clearScheduledMoves: () => {
-    const state = get();
-    state.scheduledOpponentMoves.forEach((m) => {
-      if (m.timeoutId) clearTimeout(m.timeoutId);
-    });
-    set({ scheduledOpponentMoves: [], opponentMoveLog: [] });
+    const timer = get().opponentQueueTimer;
+    if (timer) clearTimeout(timer);
+    set({ opponentMoveQueue: [], opponentQueueTimer: null, opponentMoveLog: [] });
   },
-}));
+  };
+});
