@@ -332,14 +332,12 @@ export function useSocket() {
 
   // Attach to any live match (match page mount). On a shared socket this
   // replaces the old implicit "new page = new connection = rejoin" flow.
-  // Only needed when reusing an already-live connection: a socket that is
-  // still connecting (fresh page load / reconnect) gets the same resync from
-  // the server's connection handler, so emitting here would duplicate it.
+  // Always emitted — if the socket is still connecting, socket.io buffers the
+  // emit until after the handshake. The server dedupes when this socket was
+  // already attached (e.g. by the connection-time resync after a reload) and
+  // otherwise takes over event routing from any other tab's socket.
   const sendMatchRejoin = useCallback(() => {
-    const socket = ensureSocket();
-    if (socket?.connected) {
-      socket.emit('match_rejoin', {});
-    }
+    ensureSocket()?.emit('match_rejoin', {});
   }, []);
 
   // Detach from the current match (match page unmount mid-match). The server

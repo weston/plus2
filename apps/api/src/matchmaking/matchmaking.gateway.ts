@@ -205,7 +205,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
    * here left rejoining players with solveId=null and a permanently frozen
    * opponent cube.
    */
-  private async attachAndResyncMatch(socket: AuthenticatedSocket): Promise<boolean> {
+  private async attachAndResyncMatch(
+    socket: AuthenticatedSocket,
+    opts: { takeover?: boolean } = {},
+  ): Promise<boolean> {
     if (!socket.userId) return false;
 
     for (const [matchId, matchState] of this.activeMatches.entries()) {
@@ -213,8 +216,30 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         continue;
       }
 
+      // A plain reconnect (new tab, second device, background tab waking up)
+      // must NOT steal the match's event routing from a socket that is
+      // already attached — only an explicit match_rejoin (the match page
+      // mounting) takes over.
+      if (!opts.takeover && this.findOtherAttachedSocket(matchId, socket.userId, socket.id)) {
+        return false;
+      }
+
       socket.matchId = matchId;
       socket.join(matchId);
+
+      // Enforce at most one attached socket per player per match: event
+      // routing follows the attachment, so clear any stale attachment held
+      // by the user's other sockets.
+      const socketsMap = this.server?.sockets as unknown as Map<string, Socket>;
+      if (socketsMap) {
+        for (const [, other] of socketsMap) {
+          const o = other as AuthenticatedSocket;
+          if (o.userId === socket.userId && o.id !== socket.id && o.matchId === matchId) {
+            o.matchId = undefined;
+            other.leave(matchId);
+          }
+        }
+      }
 
       // Cancel abandon timeout for this player
       const isPlayer1 = matchState.player1Id === socket.userId;
@@ -228,7 +253,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
       // Notify opponent that player is (back) in the match
       const opponentId = isPlayer1 ? matchState.player2Id : matchState.player1Id;
-      const opponentSocket = this.findSocketByUserId(opponentId);
+      const opponentSocket = this.findMatchSocket(opponentId, matchId);
       opponentSocket?.emit('opponent_reconnect', {});
 
       // Send current match state to the (re)joining user
@@ -370,13 +395,21 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       this.handleSoloAbandon(socket);
     }
 
-    // Handle match disconnect - notify opponent if they're still connected
-    if (socket.matchId && socket.userId && !hasOtherLiveSocket) {
+    // Handle match disconnect - notify opponent if they're still connected.
+    // Only the socket ATTACHED to the match manages its lifecycle (a user's
+    // other tabs carry no matchId and skip this naturally). If another live
+    // socket of theirs is already attached — a takeover happened before this
+    // disconnect was processed — that socket owns the match now.
+    if (
+      socket.matchId &&
+      socket.userId &&
+      !this.findOtherAttachedSocket(socket.matchId, socket.userId, socket.id)
+    ) {
       const match = this.activeMatches.get(socket.matchId);
       if (match) {
         const isPlayer1 = socket.userId === match.player1Id;
         const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
-        const opponentSocket = this.findSocketByUserId(opponentId);
+        const opponentSocket = this.findMatchSocket(opponentId, socket.matchId);
         if (opponentSocket) {
           opponentSocket.emit('opponent_disconnect', {});
         }
@@ -479,7 +512,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // socket, or the connection handler just resynced it (page reload). Skip
     // so a mount-time rejoin can't duplicate the resync frame.
     if (socket.matchId && this.activeMatches.has(socket.matchId)) return;
-    await this.attachAndResyncMatch(socket);
+    // Explicit rejoin from the match page: take over event routing even if
+    // one of the user's other sockets (another tab) is currently attached.
+    await this.attachAndResyncMatch(socket, { takeover: true });
   }
 
   /**
@@ -504,7 +539,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     const isPlayer1 = socket.userId === match.player1Id;
     const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
-    this.findSocketByUserId(opponentId)?.emit('opponent_disconnect', {});
+    this.findMatchSocket(opponentId, matchId)?.emit('opponent_disconnect', {});
 
     const forfeitingUserId = socket.userId;
     const abandonTimeout = setTimeout(async () => {
@@ -538,7 +573,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     // Notify opponent
     const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
-    const opponentSocket = this.findSocketByUserId(opponentId);
+    const opponentSocket = this.findMatchSocket(opponentId, socket.matchId);
     opponentSocket?.emit('opponent_ready', {});
 
     // If both ready, start next round
@@ -603,9 +638,11 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       { seq: data.seq, move: data.move, clientTs, serverTs },
     );
 
-    // Relay to opponent with relative timestamp for deterministic replay
+    // Relay to opponent with relative timestamp for deterministic replay.
+    // Route to the socket attached to this match — the opponent may have
+    // other tabs/devices connected that must not swallow the moves.
     const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
-    const opponentSocket = this.findSocketByUserId(opponentId);
+    const opponentSocket = this.findMatchSocket(opponentId, socket.matchId);
 
     // If solve just started, emit solve_start event to BOTH players
     if (solveJustStarted) {
@@ -672,7 +709,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     // Notify opponent of completion with the SAME time
     const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
-    const opponentSocket = this.findSocketByUserId(opponentId);
+    const opponentSocket = this.findMatchSocket(opponentId, socket.matchId);
     opponentSocket?.emit('opponent_done', { timeMs: result.timeMs });
 
     // Check if round is complete
@@ -774,12 +811,14 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       return;
     }
 
-    // Resolve the creator's CURRENT socket by user id — the socket id captured
-    // at challenge creation goes stale if the creator's page reconnected while
-    // waiting for the friend to join.
-    const creatorSocket = this.findSocketByUserId(challenge.creatorId) as
-      | AuthenticatedSocket
-      | undefined;
+    // Resolve the creator's socket: prefer the exact socket that created the
+    // challenge (the tab sitting on the challenge page) — the creator may
+    // have OTHER live sockets (background tabs, another device) that must not
+    // receive the match. Fall back to their newest socket if the creating
+    // socket reconnected while waiting.
+    const socketsMapForCreator = this.server?.sockets as unknown as Map<string, Socket>;
+    const creatorSocket = (socketsMapForCreator?.get(challenge.creatorSocketId) ??
+      this.findSocketByUserId(challenge.creatorId)) as AuthenticatedSocket | undefined;
     if (!creatorSocket) {
       this.matchmakingService.deleteChallenge(data.code);
       socket.emit('error', {
@@ -1695,8 +1734,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       solveId,
     };
 
-    const p1Socket = this.findSocketByUserId(matchState.player1Id);
-    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+    const p1Socket = this.findMatchSocket(matchState.player1Id, matchId);
+    const p2Socket = this.findMatchSocket(matchState.player2Id, matchId);
 
     console.log(`[SYNC] Round start: ${solveId}, inspectionStartServerMs=${matchState.inspectionStartServerMs}`);
 
@@ -1717,8 +1756,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const solveStartsAt = Date.now();
     const solveId: SolveId = `${matchId}:${matchState.currentRound}`;
 
-    const p1Socket = this.findSocketByUserId(matchState.player1Id);
-    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+    const p1Socket = this.findMatchSocket(matchState.player1Id, matchId);
+    const p2Socket = this.findMatchSocket(matchState.player2Id, matchId);
 
     // For any player who hasn't started yet, set their solve start to inspection end
     // This ensures both players have a deterministic solve start time
@@ -1794,8 +1833,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     }
 
     // Look up sockets dynamically
-    const p1Socket = this.findSocketByUserId(matchState.player1Id);
-    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+    const p1Socket = this.findMatchSocket(matchState.player1Id, matchId);
+    const p2Socket = this.findMatchSocket(matchState.player2Id, matchId);
 
     // Send results to both players
     p1Socket?.emit('solve_result', {
@@ -1860,8 +1899,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const result = await this.matchesService.completeMatch(matchId);
 
     // Look up sockets dynamically
-    const p1Socket = this.findSocketByUserId(matchState.player1Id);
-    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+    const p1Socket = this.findMatchSocket(matchState.player1Id, matchId);
+    const p2Socket = this.findMatchSocket(matchState.player2Id, matchId);
 
     // Send final results
     p1Socket?.emit('match_end', {
@@ -1905,8 +1944,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     // Clean up match state after delay
     setTimeout(() => {
-      const p1 = this.findSocketByUserId(matchState.player1Id) as AuthenticatedSocket;
-      const p2 = this.findSocketByUserId(matchState.player2Id) as AuthenticatedSocket;
+      const p1 = this.findMatchSocket(matchState.player1Id, matchId) as AuthenticatedSocket;
+      const p2 = this.findMatchSocket(matchState.player2Id, matchId) as AuthenticatedSocket;
       if (p1) p1.matchId = undefined;
       if (p2) p2.matchId = undefined;
       this.activeMatches.delete(matchId);
@@ -1940,8 +1979,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (!result) return;
 
     // Notify both players of the DNF
-    const p1Socket = this.findSocketByUserId(matchState.player1Id);
-    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+    const p1Socket = this.findMatchSocket(matchState.player1Id, matchId);
+    const p2Socket = this.findMatchSocket(matchState.player2Id, matchId);
 
     const dnfPlayer = isPlayer1 ? 'p1' : 'p2';
     p1Socket?.emit('player_dnf', {
@@ -1994,8 +2033,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     }
 
     // Notify both players
-    const p1Socket = this.findSocketByUserId(matchState.player1Id);
-    const p2Socket = this.findSocketByUserId(matchState.player2Id);
+    const p1Socket = this.findMatchSocket(matchState.player1Id, matchId);
+    const p2Socket = this.findMatchSocket(matchState.player2Id, matchId);
 
     const isPlayer1Forfeiting = forfeitingUserId === matchState.player1Id;
 
@@ -2046,13 +2085,60 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     this.activeMatches.delete(matchId);
   }
 
+  // A user can hold several live sockets at once (background tabs, a second
+  // device) — return the NEWEST one, which is most likely the tab they're
+  // actively using. Match-scoped events must use findMatchSocket instead.
   private findSocketByUserId(userId: string): Socket | undefined {
     if (!this.server) return undefined;
 
     // When using a namespace, this.server.sockets is a Map<SocketId, Socket>
     const socketsMap = this.server.sockets as unknown as Map<string, Socket>;
+    let newest: Socket | undefined;
     for (const [, socket] of socketsMap) {
       if ((socket as AuthenticatedSocket).userId === userId) {
+        newest = socket;
+      }
+    }
+    return newest;
+  }
+
+  // The socket that should receive this match's events for this player: the
+  // one explicitly ATTACHED to the match (matchId set). Routing by "any
+  // socket of this user" mis-delivers to whichever tab/device connected
+  // first — the production frozen/blank-cube bug. Falls back to the user's
+  // newest socket for legacy clients that never attach explicitly.
+  private findMatchSocket(userId: string, matchId: string): Socket | undefined {
+    if (!this.server) return undefined;
+
+    const socketsMap = this.server.sockets as unknown as Map<string, Socket>;
+    let newest: Socket | undefined;
+    for (const [, socket] of socketsMap) {
+      const s = socket as AuthenticatedSocket;
+      if (s.userId !== userId) continue;
+      if (s.matchId === matchId && socket.connected) return socket;
+      newest = socket;
+    }
+    return newest;
+  }
+
+  // A LIVE socket of this user attached to this match, other than the given
+  // one. Used to decide whether a connect/disconnect owns the match lifecycle.
+  private findOtherAttachedSocket(
+    matchId: string,
+    userId: string,
+    excludeSocketId: string,
+  ): Socket | undefined {
+    if (!this.server) return undefined;
+
+    const socketsMap = this.server.sockets as unknown as Map<string, Socket>;
+    for (const [, socket] of socketsMap) {
+      const s = socket as AuthenticatedSocket;
+      if (
+        s.userId === userId &&
+        s.matchId === matchId &&
+        socket.id !== excludeSocketId &&
+        socket.connected
+      ) {
         return socket;
       }
     }
