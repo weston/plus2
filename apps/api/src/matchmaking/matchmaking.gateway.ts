@@ -135,6 +135,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       ghostMmrAtRecording: number;
       isOldGhost: boolean;
       isSeed?: boolean; // synthetic seed ghost — don't persist a GhostRace row
+      // Set synchronously the moment settlement begins (finish or abandon), so a
+      // duplicate complete / disconnect racing the multi-await settlement can't
+      // re-enter and apply the MMR delta twice.
+      settling?: boolean;
       // Scramble-set identity of the raced ghost — the racer's own snapshot
       // inherits it (same scrambles, same lineage).
       scrambleSetId?: string | null;
@@ -879,8 +883,14 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const match = this.activeMatches.get(socket.matchId);
     if (!match) return;
 
-    // Clear solve timeout for this player
     const isPlayer1 = socket.userId === match.player1Id;
+
+    // Idempotency fast-path: once this player is done for the round, drop any
+    // duplicate/replayed solve_complete before it can double-score. (The
+    // service layer also guards this under the round lock.)
+    if (isPlayer1 ? match.player1Done : match.player2Done) return;
+
+    // Clear solve timeout for this player
     if (isPlayer1 && match.player1SolveTimeout) {
       clearTimeout(match.player1SolveTimeout);
       match.player1SolveTimeout = undefined;
@@ -903,6 +913,14 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       typeof data?.solvedMoveCount === 'number' && data.solvedMoveCount >= 0
         ? Math.floor(data.solvedMoveCount)
         : null;
+
+    // An impossible client time (NaN / Infinity / non-positive) is not a real
+    // solve — treat it as a DNF rather than storing a fabricated value or
+    // letting NaN slip past the clamp below (NaN < x is always false) and
+    // poison averages.
+    if (data?.timeMs != null && (!Number.isFinite(data.timeMs) || data.timeMs <= 0)) {
+      data.timeMs = null;
+    }
 
     if (data?.timeMs == null) {
       const result = await this.matchesService.recordDNF(
@@ -963,24 +981,30 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
   @SubscribeMessage('rematch')
   async handleRematch(@ConnectedSocket() socket: AuthenticatedSocket) {
-    // For MVP, just requeue both players
-    if (socket.matchId) {
-      const match = this.activeMatches.get(socket.matchId);
-      if (match) {
-        // Clean up old match
-        this.activeMatches.delete(socket.matchId);
+    if (!socket.matchId) return;
+    const match = this.activeMatches.get(socket.matchId);
+    if (!match) return;
 
-        // Get puzzle size from the old match
-        const oldMatch = await this.matchesService.getMatch(socket.matchId);
-        if (oldMatch) {
-          // Re-queue the player
-          socket.matchId = undefined;
-          socket.playerNumber = undefined;
-
-          await this.handleQueueJoin(socket, { puzzleSize: oldMatch.puzzleSize });
-        }
-      }
+    const oldMatch = await this.matchesService.getMatch(socket.matchId);
+    // Only allow rematch/requeue once the match has actually ended. Otherwise a
+    // player about to lose could emit `rematch` to delete the live match state
+    // — dodging the ranked loss and stranding the opponent in a zombie match
+    // (their events dead-end, their socket stays IN_MATCH). A live match must
+    // be left via resign/leave, which correctly records the forfeit.
+    if (
+      !oldMatch ||
+      (oldMatch.status !== 'completed' &&
+        oldMatch.status !== 'forfeited' &&
+        oldMatch.status !== 'abandoned')
+    ) {
+      return;
     }
+
+    // Clean up the finished match and re-queue the player.
+    this.activeMatches.delete(socket.matchId);
+    socket.matchId = undefined;
+    socket.playerNumber = undefined;
+    await this.handleQueueJoin(socket, { puzzleSize: oldMatch.puzzleSize });
   }
 
   @SubscribeMessage('requeue')
@@ -1578,6 +1602,11 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const race = this.activeGhostRaces.get(socket.ghostRaceId);
     if (!race) return;
 
+    // One result per round. Drop duplicates (and completes arriving between or
+    // before rounds) so userTimes can't be pushed twice or misaligned against
+    // ghostTimes, and so the final round can't trigger settlement more than once.
+    if (race.settling || race.userTimes.length >= race.currentRound) return;
+
     // Clear solve timeout
     if (race.solveTimeout) {
       clearTimeout(race.solveTimeout);
@@ -1662,9 +1691,19 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       race.nextRoundTimer = undefined;
     }
 
-    // Start next round if not finished
+    // Skipping is meant to skip watching the ghost replay AFTER the round's
+    // result is recorded. If the current round has no result yet, the player is
+    // skipping a live round — record it as a DNF so rounds can't be cherry-
+    // picked (skip the losing ones, submit only the fast ones for a 1-0 win).
+    if (race.userTimes.length < race.currentRound) {
+      race.userTimes.push(null);
+    }
+
+    // Start next round, or settle if that was the last round.
     if (race.currentRound < race.totalRounds) {
       this.startGhostRaceRound(socket.ghostRaceId);
+    } else {
+      await this.finishGhostRace(socket.ghostRaceId);
     }
   }
 
@@ -1673,11 +1712,15 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (!socket.ghostRaceId || !this.soloService) return;
 
     const race = this.activeGhostRaces.get(socket.ghostRaceId);
-    if (!race) {
+    if (!race || race.settling) {
       socket.ghostRaceId = undefined;
       socket.emit('ghost_race_abandoned', {});
       return;
     }
+    // Claim settlement and remove from the active map before any await so a
+    // finish/complete racing this abandon can't also settle (double MMR).
+    race.settling = true;
+    this.activeGhostRaces.delete(socket.ghostRaceId);
 
     // Clear timers
     if (race.inspectionTimer) clearTimeout(race.inspectionTimer);
@@ -1720,7 +1763,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       ghostTimes: race.ghostTimes,
     });
 
-    this.activeGhostRaces.delete(socket.ghostRaceId);
+    // (Race was already removed from activeGhostRaces up-front, under `settling`.)
     socket.ghostRaceId = undefined;
 
     // Send the result to the user so they see the MMR change
@@ -1953,7 +1996,12 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
   private async finishGhostRace(raceId: string) {
     const race = this.activeGhostRaces.get(raceId);
-    if (!race || !this.soloService) return;
+    if (!race || !this.soloService || race.settling) return;
+    // Claim settlement synchronously and drop the race from the active map
+    // BEFORE any await, so a duplicate complete / disconnect / abandon racing
+    // the DB round-trips below can't re-enter and double-apply MMR.
+    race.settling = true;
+    this.activeGhostRaces.delete(raceId);
 
     // Clear timers
     if (race.inspectionTimer) clearTimeout(race.inspectionTimer);
@@ -2019,8 +2067,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         console.error('Ghost snapshot (race) error:', e);
       }
     }
-
-    this.activeGhostRaces.delete(raceId);
+    // (Race was already removed from activeGhostRaces up-front, under `settling`.)
   }
 
   private findSocketByGhostRace(raceId: string): Socket | undefined {
@@ -2255,6 +2302,17 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (!matchState.player1SolveStartServerMs) {
       matchState.player1SolveStartServerMs = solveStartsAt;
       matchState.player1SolveStartedAt = solveStartsAt;
+      // Stamp the monotonic solve-start and arm the solve timeout here too.
+      // A player who makes their first move AFTER inspection ends never trips
+      // the first-move branch in handleMove (SolveStartServerMs is already set),
+      // so without this the anticheat clamp has no baseline and the 10-min
+      // timeout never arms — letting under-reported times through and hanging
+      // the round if the player goes AFK.
+      matchState.player1SolveStartMono = performance.now();
+      matchState.player1SolveTimeout = setTimeout(
+        () => this.handleSolveTimeout(matchId, matchState.player1Id),
+        this.SOLVE_TIMEOUT_MS,
+      );
       p1Socket?.emit('solve_start', {
         solveId,
         solveStartServerMs: solveStartsAt,
@@ -2275,6 +2333,13 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (!matchState.player2SolveStartServerMs) {
       matchState.player2SolveStartServerMs = solveStartsAt;
       matchState.player2SolveStartedAt = solveStartsAt;
+      // See the player-1 note above: stamp mono + arm the timeout at inspection
+      // end so the clamp has a baseline and AFK players still time out.
+      matchState.player2SolveStartMono = performance.now();
+      matchState.player2SolveTimeout = setTimeout(
+        () => this.handleSolveTimeout(matchId, matchState.player2Id),
+        this.SOLVE_TIMEOUT_MS,
+      );
       p2Socket?.emit('solve_start', {
         solveId,
         solveStartServerMs: solveStartsAt,
@@ -2381,6 +2446,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     }
 
     const result = await this.matchesService.completeMatch(matchId);
+    // Already settled (duplicate completion / forfeit race) — don't re-emit
+    // match_end or re-snapshot ghosts. The first invocation did the work.
+    if (!result) return;
 
     // Look up sockets dynamically
     const p1Socket = this.findMatchSocket(matchState.player1Id, matchId);
@@ -2468,6 +2536,11 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     } else {
       matchState.player2SolveTimeout = undefined;
     }
+
+    // Mark the player done for the round so a trailing move can't flip their
+    // DNF back to "solving" (which would leave the round unresolvable forever).
+    if (isPlayer1) matchState.player1Done = true;
+    else matchState.player2Done = true;
 
     // Record DNF for this player
     const result = await this.matchesService.recordDNF(

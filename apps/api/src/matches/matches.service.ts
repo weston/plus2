@@ -238,6 +238,16 @@ export class MatchesService {
       if (!solve) return null;
 
       const isPlayer1 = match.player1Id === userId;
+
+      // Idempotency: if this player's solve for the round is already terminal,
+      // a duplicate/replayed solve_complete must not re-run resolveRoundWinner
+      // (which does score += 1) or re-award solve stats. Runs under the
+      // round lock, so this is the authoritative dedupe.
+      const callerTerminal = isPlayer1
+        ? solve.p1Status === 'completed' || solve.p1Status === 'dnf'
+        : solve.p2Status === 'completed' || solve.p2Status === 'dnf';
+      if (callerTerminal) return null;
+
       const now = new Date();
 
       // Trim accidental trailing inputs (keys hit right as the solve ended)
@@ -354,8 +364,16 @@ export class MatchesService {
     p2MmrDelta: number;
     p2NewMmr: number;
     p2NewLeague: string;
-  }> {
+  } | null> {
     const match = await this.getMatch(matchId);
+
+    // Idempotency guard: never settle a match twice. Without this, a duplicate
+    // completion (see the solve_complete dedupe) or a forfeit-timer racing the
+    // final solve would call updateRatingAfterMatch a second time and
+    // double-apply MMR / double-count gamesPlayed.
+    if (match.status === 'completed' || match.status === 'forfeited') {
+      return null;
+    }
 
     const winnerId =
       match.player1Score >= WINS_NEEDED ? match.player1Id : match.player2Id;
@@ -528,6 +546,13 @@ export class MatchesService {
       if (!solve) return null;
 
       const isPlayer1 = match.player1Id === userId;
+
+      // Idempotency: don't re-record a DNF (and re-resolve the round) if this
+      // player's solve is already terminal.
+      const callerTerminal = isPlayer1
+        ? solve.p1Status === 'completed' || solve.p1Status === 'dnf'
+        : solve.p2Status === 'completed' || solve.p2Status === 'dnf';
+      if (callerTerminal) return null;
 
       if (isPlayer1) {
         solve.p1Status = 'dnf';
