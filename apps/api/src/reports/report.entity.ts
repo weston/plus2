@@ -40,7 +40,9 @@ export class Report {
   @Column({ name: 'reviewed_by', type: 'varchar', length: 36, nullable: true })
   reviewedBy: string | null;
 
-  @Column({ name: 'reviewed_at', type: 'datetime', nullable: true })
+  // `type: Date` lets each driver pick its native type (sqlite: datetime,
+  // postgres: timestamp) — a string type here breaks one or the other.
+  @Column({ name: 'reviewed_at', type: Date, nullable: true })
   reviewedAt: Date | null;
 
   @CreateDateColumn({ name: 'created_at' })
