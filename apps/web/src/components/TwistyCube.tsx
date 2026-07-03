@@ -25,6 +25,8 @@ interface TwistyCubeProps {
   faceColors?: Record<string, string> | null;
   // Image drawn on the U-face center sticker (a real cube's "logo").
   logoUrl?: string | null;
+  // Drag to orbit the camera (used by the settings preview).
+  draggable?: boolean;
   className?: string;
 }
 
@@ -40,6 +42,7 @@ interface CstimerCube {
   setLogo?: (url: string | null) => void;
   getCommitted?: () => number;
   getSolvedAt?: () => number;
+  orbit?: (dTheta: number, dPhi: number) => void;
   setSpeed: (v: number) => void;
   _ro?: ResizeObserver;
 }
@@ -125,7 +128,7 @@ function speedToVrc(speed: number): number {
 }
 
 export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function TwistyCube(
-  { puzzleSize, scramble = '', moves = [], onSolved, animationSpeed = 3, faceColors, logoUrl, className = '' },
+  { puzzleSize, scramble = '', moves = [], onSolved, animationSpeed = 3, faceColors, logoUrl, draggable = false, className = '' },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -149,6 +152,55 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
     logoUrlRef.current = logoUrl ?? null;
     cubeRef.current?.setLogo?.(logoUrl ?? null);
   }, [logoUrl]);
+
+  // Drag-to-orbit (pointer events cover mouse + touch).
+  useEffect(() => {
+    if (!draggable) return;
+    const el = containerRef.current;
+    if (!el) return;
+    let dragging = false;
+    let lastX = 0;
+    let lastY = 0;
+    const SENS = 0.05; // camera steps per pixel
+
+    const down = (e: PointerEvent) => {
+      dragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      el.setPointerCapture?.(e.pointerId);
+      el.style.cursor = 'grabbing';
+    };
+    const move = (e: PointerEvent) => {
+      if (!dragging) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      cubeRef.current?.orbit?.(-dx * SENS, dy * SENS);
+    };
+    const up = (e: PointerEvent) => {
+      dragging = false;
+      el.style.cursor = 'grab';
+      try {
+        el.releasePointerCapture?.(e.pointerId);
+      } catch {
+        /* pointer already released */
+      }
+    };
+
+    el.style.cursor = 'grab';
+    el.style.touchAction = 'none';
+    el.addEventListener('pointerdown', down);
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+    return () => {
+      el.removeEventListener('pointerdown', down);
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+    };
+  }, [draggable]);
 
   useEffect(() => {
     speedRef.current = animationSpeed;

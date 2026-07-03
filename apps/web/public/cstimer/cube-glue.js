@@ -212,6 +212,9 @@
       setLogo: setLogo,
       getCommitted: function () { return committedCount; },
       getSolvedAt: function () { return solvedAtCount; },
+      // Orbit the camera (drag-to-rotate). Units: camera steps, clamped to
+      // roughly ±45° per axis by the scene.
+      orbit: function (dTheta, dPhi) { scene.cam(dTheta, dPhi); },
       setSpeed: function (v) { _cfg.vrcSpeed = v; },
       setOri: function (o) { _cfg.vrcOri = o; scene.resize(); }
     };

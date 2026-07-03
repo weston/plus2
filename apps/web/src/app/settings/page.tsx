@@ -524,7 +524,8 @@ export default function SettingsPage() {
             <div className={prefsLoaded ? '' : 'pointer-events-none opacity-50'} aria-busy={!prefsLoaded}>
             {/* Live preview */}
             <div className="mb-6">
-              <TwistyCube puzzleSize="3x3" scramble="" faceColors={cubeColors} logoUrl={cubeLogo} animationSpeed={animationSpeed} className="h-40" />
+              <TwistyCube puzzleSize="3x3" scramble="" faceColors={cubeColors} logoUrl={cubeLogo} animationSpeed={animationSpeed} draggable className="h-72 md:h-96" />
+              <p className="text-center text-xs text-gray-500 mt-2">Drag the cube to look around</p>
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
@@ -597,7 +598,7 @@ export default function SettingsPage() {
             <div className="mt-8 pt-6 border-t border-gray-700">
               <h2 className="text-xl font-semibold mb-4">Animation Speed</h2>
               <p className="text-gray-400 mb-4">
-                Control how fast cube moves animate in zen mode.
+                Control how fast cube turns animate — applies everywhere you solve.
               </p>
               <div className="bg-gray-800 p-4 rounded-lg">
                 <input

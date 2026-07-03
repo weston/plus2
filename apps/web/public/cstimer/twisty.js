@@ -292,8 +292,8 @@ window.twistyjs = (function() {
 		}
 		*/
 
-		this.cam = function(deltaTheta) {
-			moveCameraDelta(deltaTheta, 0);
+		this.cam = function(deltaTheta, deltaPhi) {
+			moveCameraDelta(deltaTheta, deltaPhi || 0);
 		}
 
 		function render() {
