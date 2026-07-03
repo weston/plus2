@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
 import { useGameStore } from '@/stores/game';
 import { useChatStore } from '@/stores/chatroom';
-import { useCubePrefs } from '@/stores/cubePrefs';
+import { useCubePrefs, DEFAULT_CUBE_COLORS } from '@/stores/cubePrefs';
 import { useSocket } from '@/hooks/useSocket';
 import { CountryFlag } from '@/components/CountryFlag';
 import { LeagueBadge } from '@/components/LeagueBadge';
@@ -143,10 +143,17 @@ export default function DashboardPage() {
       setGhostRaces([]);
     });
 
-    // Hydrate the local cube-color theme from the server copy (covers a
-    // fresh browser with empty localStorage).
+    // Hydrate the local cube-color theme from the server copy — but ONLY
+    // into factory-default local state (i.e. a fresh browser). Local custom
+    // colors were set by an explicit user action; a lagging or stale server
+    // copy must never overwrite them ("my colors reverted!"). The settings
+    // page is where the server copy is authoritative.
     usersApi.getPreferences(accessToken).then((prefs) => {
-      if (prefs.cubeColors) useCubePrefs.getState().setColors(prefs.cubeColors);
+      const cubePrefs = useCubePrefs.getState();
+      const isFactory = JSON.stringify(cubePrefs.colors) === JSON.stringify(DEFAULT_CUBE_COLORS);
+      if (prefs.cubeColors && !cubePrefs.modified && isFactory) {
+        cubePrefs.setColors(prefs.cubeColors);
+      }
     }).catch(() => {});
   }, [accessToken]);
 

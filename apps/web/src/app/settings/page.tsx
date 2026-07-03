@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
 import { useCubePrefs } from '@/stores/cubePrefs';
 import { TwistyCube } from '@/components/TwistyCube';
-import { authApi, keybindingsApi, usersApi } from '@/lib/api';
+import { authApi, keybindingsApi, usersApi , type UserPreferences } from '@/lib/api';
 import { ALL_MOVES, DEFAULT_KEYBINDINGS } from '@plus2/shared';
 import { CountryFlag, COUNTRIES } from '@/components/CountryFlag';
 
@@ -107,9 +107,13 @@ export default function SettingsPage() {
     if (!accessToken) return;
 
     usersApi.getPreferences(accessToken).then((prefs) => {
+      // A slow GET must never clobber edits the user already made while it
+      // was in flight — only apply the server copy to untouched state.
+      if (prefsDirtyRef.current) return;
       if (prefs.cubeColors) {
-        useCubePrefs.getState().setColors({ ...DEFAULT_CUBE_COLORS, ...(prefs.cubeColors || {}) });
-      setCubeColors({ ...DEFAULT_CUBE_COLORS, ...prefs.cubeColors });
+        const merged = { ...DEFAULT_CUBE_COLORS, ...prefs.cubeColors };
+        useCubePrefs.getState().setColors(merged);
+        setCubeColors(merged);
       }
       if (prefs.animationSpeed !== undefined) {
         setAnimationSpeed(prefs.animationSpeed);
@@ -199,23 +203,78 @@ export default function SettingsPage() {
     savePreferences({ ghostOptOut: optOut });
   };
 
-  const savePreferences = async (prefs: { animationSpeed?: number; cubeColors?: Record<string, string>; ghostOptOut?: boolean }) => {
-    if (!accessToken) return;
+  // Debounced, single-flight, latest-wins preference saves. A color-picker
+  // drag fires onChange dozens of times; firing a PUT per tick let concurrent
+  // read-merge-write requests interleave on the server, so a STALE write
+  // could land last and "revert" the user's pick. Instead: coalesce edits,
+  // keep at most one request in flight, and always send the newest state.
+  const prefsDirtyRef = useRef(false);
+  const pendingPrefsRef = useRef<UserPreferences | null>(null);
+  const prefsInFlightRef = useRef(false);
+  const prefsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushPreferences = async () => {
+    if (prefsInFlightRef.current) return; // the in-flight finisher re-queues
+    const body = pendingPrefsRef.current;
+    if (!body || !accessToken) return;
+    pendingPrefsRef.current = null;
+    prefsInFlightRef.current = true;
     setIsSavingPrefs(true);
     try {
-      await usersApi.updatePreferences(accessToken, prefs);
+      await usersApi.updatePreferences(accessToken, body);
     } catch {
+      // Re-queue what failed under anything newer, and surface it.
+      pendingPrefsRef.current = { ...body, ...(pendingPrefsRef.current ?? {}) };
       setMessage('Failed to save preferences');
     } finally {
+      prefsInFlightRef.current = false;
       setIsSavingPrefs(false);
+      if (pendingPrefsRef.current) {
+        prefsTimerRef.current = setTimeout(flushPreferences, 400);
+      }
     }
   };
+
+  const savePreferences = (prefs: UserPreferences) => {
+    prefsDirtyRef.current = true;
+    pendingPrefsRef.current = { ...(pendingPrefsRef.current ?? {}), ...prefs };
+    if (prefsTimerRef.current) clearTimeout(prefsTimerRef.current);
+    prefsTimerRef.current = setTimeout(flushPreferences, 400);
+  };
+
+  // Flush pending edits when leaving. Client-side route changes run the
+  // unmount cleanup; HARD navigations (reload, typed URL, closed tab) do NOT
+  // unmount React, so pagehide + fetch keepalive covers those — otherwise an
+  // edit inside the debounce window would never reach the server and a later
+  // hydration would revert it.
+  useEffect(() => {
+    const flushKeepalive = () => {
+      const body = pendingPrefsRef.current;
+      if (!body || !accessToken) return;
+      pendingPrefsRef.current = null;
+      fetch(`${API_BASE}/users/me/preferences`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify(body),
+        keepalive: true,
+      }).catch(() => {});
+    };
+    window.addEventListener('pagehide', flushKeepalive);
+    return () => {
+      window.removeEventListener('pagehide', flushKeepalive);
+      if (prefsTimerRef.current) clearTimeout(prefsTimerRef.current);
+      flushKeepalive();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken]);
 
   // Cube color handlers
   const handleColorChange = (face: string, color: string) => {
     const newColors = { ...cubeColors, [face]: color };
     setCubeColors(newColors);
-    useCubePrefs.getState().setColors(newColors); // apply everywhere + localStorage
+    const cubePrefs = useCubePrefs.getState();
+    cubePrefs.setColors(newColors); // apply everywhere + localStorage
+    cubePrefs.markModified(); // hydration must not revert this session's edits
     savePreferences({ cubeColors: newColors });
   };
 
@@ -227,7 +286,9 @@ export default function SettingsPage() {
 
   const resetColorsToDefaults = () => {
     setCubeColors(DEFAULT_CUBE_COLORS);
-    useCubePrefs.getState().setColors(DEFAULT_CUBE_COLORS);
+    const cubePrefs = useCubePrefs.getState();
+    cubePrefs.setColors(DEFAULT_CUBE_COLORS);
+    cubePrefs.markModified();
     savePreferences({ cubeColors: DEFAULT_CUBE_COLORS });
     setMessage('Colors reset to defaults');
     setTimeout(() => setMessage(''), 3000);
