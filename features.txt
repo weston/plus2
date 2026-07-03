@@ -19,7 +19,9 @@ Multiplayer / social
 - Global "you're in a live match" banner with a Return button (the match keeps running if you navigate away; today there's no affordance to get back)
 - Global "in queue" indicator so queueing can persist across pages (currently leaving the dashboard leaves the queue by design)
 - Tournaments / brackets
-- In-match chat or quick emotes
+- Global front-page chat room, available to WCA-verified accounts only
+- In-match chat when playing against a real person (or quick emotes)
+- "LIVE" badge shown when your opponent is a real person playing live (vs a ghost)
 
 Progression / stats
 - Historical times on your profile: plot averages (ao5/ao12/ao100) against time so
@@ -36,6 +38,9 @@ Customization
 - Opponents' color schemes travel with them: when you play someone (or race
   their ghost), THEIR cube renders in THEIR chosen colors on your screen —
   color scheme becomes part of a player's identity.
+- Remember your color theme in the browser (localStorage) so it survives
+  reloads/sessions — applies to the site theme switcher and, once built, the
+  custom cube colors.
 
 Platform
 - Mobile / touch controls (swipe-to-turn or on-screen buttons)

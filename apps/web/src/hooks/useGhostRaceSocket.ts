@@ -48,6 +48,9 @@ export interface GhostRaceState {
   newMmr: number;
   newLeague: LeagueTier | null;
   error: string | null;
+  // No unseen ghosts near the player's rating: the ranked hierarchy says
+  // record your own ao5 instead (the page routes there).
+  noGhosts: boolean;
 }
 
 const initialState: GhostRaceState = {
@@ -80,6 +83,7 @@ const initialState: GhostRaceState = {
   newMmr: 0,
   newLeague: null,
   error: null,
+  noGhosts: false,
 };
 
 export function useGhostRaceSocket() {
@@ -226,6 +230,17 @@ export function useGhostRaceSocket() {
       updateUser({ mmr: data.newMmr, league: data.newLeague });
     });
 
+    // End of the ranked hierarchy: no human, no unseen ghost — the player
+    // should record an Average of 5 (which becomes their ghost) instead.
+    socket.on('ghost_race_unavailable', (data: { message: string }) => {
+      setState((prev) => ({
+        ...prev,
+        phase: 'idle',
+        noGhosts: true,
+        error: data.message,
+      }));
+    });
+
     // Legacy handler - server now sends ghost_race_end with abandoned: true instead
     socket.on('ghost_race_abandoned', () => {
       setState(initialState);
@@ -240,7 +255,7 @@ export function useGhostRaceSocket() {
   // Actions
   const startRace = useCallback((size: PuzzleSize, opponentId?: string) => {
     if (socketRef.current) {
-      setState((prev) => ({ ...prev, error: null }));
+      setState((prev) => ({ ...prev, error: null, noGhosts: false }));
       socketRef.current.emit('ghost_race_start', { puzzleSize: size, opponentId });
     }
   }, []);

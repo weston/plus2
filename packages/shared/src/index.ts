@@ -379,6 +379,11 @@ export const MATCHMAKING_MAX_RANGE = 500;
 
 // Ranked: how long to look for a live human before falling back to a ghost.
 export const RANKED_HUMAN_WAIT_MS = 12000;
+
+// Ghost opponent selection: try a ghost recorded near your rating first, then
+// widen once; beyond that the player records their own ao5 (new ghost).
+export const GHOST_CLOSE_MMR_RANGE = 150;
+export const GHOST_WIDE_MMR_RANGE = 400;
 // Games at the provisional (high-K) rate before a rating settles.
 export const PROVISIONAL_GAMES = 10;
 

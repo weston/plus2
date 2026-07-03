@@ -67,6 +67,11 @@ export class Match {
   @Column({ name: 'ended_at', nullable: true })
   endedAt: Date;
 
+  // Identity of this match's scramble sequence — inherited by the ghost
+  // snapshots of both players (see solo-session.entity scrambleSetId).
+  @Column({ name: 'scramble_set_id', type: 'varchar', length: 64, nullable: true })
+  scrambleSetId: string | null;
+
   @Column({ name: 'player1_mmr_before', nullable: true })
   player1MmrBefore: number;
 

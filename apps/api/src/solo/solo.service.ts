@@ -4,10 +4,14 @@ import { Repository, MoreThan } from 'typeorm';
 import { SoloSession } from './solo-session.entity';
 import { SoloSolve } from './solo-solve.entity';
 import { GhostRace } from './ghost-race.entity';
+import { Match } from '../matches/match.entity';
+import { v4 as uuidv4 } from 'uuid';
 import { UsersService } from '../users/users.service';
 import {
   PuzzleSize,
   MoveRecord,
+  GHOST_CLOSE_MMR_RANGE,
+  GHOST_WIDE_MMR_RANGE,
   SCRAMBLE_LENGTHS,
   getLeagueFromRating,
   getSeedTargetTime,
@@ -61,6 +65,8 @@ export class SoloService {
     private sessionRepository: Repository<SoloSession>,
     @InjectRepository(SoloSolve)
     private solveRepository: Repository<SoloSolve>,
+    @InjectRepository(Match)
+    private matchRepository: Repository<Match>,
     @InjectRepository(GhostRace)
     private ghostRaceRepository: Repository<GhostRace>,
     private usersService: UsersService,
@@ -92,6 +98,8 @@ export class SoloService {
       status: 'in_progress',
       startedAt: new Date(),
       mmrAtRecording: stats.mmr,
+      // Freshly generated scrambles = a brand-new scramble set.
+      scrambleSetId: uuidv4(),
     });
 
     return this.sessionRepository.save(session);
@@ -269,10 +277,49 @@ export class SoloService {
 
   // Get a random completed session to use as ghost opponent in matchmaking
   // Excludes sessions the user has already played against
+  /**
+   * Every scramble-set identity this user has already been exposed to:
+   * matches they played, ghosts they raced (any exposure counts — races are
+   * persisted on finish AND abandon), and ghost sessions they own (their own
+   * recordings + race snapshots).
+   */
+  async getSeenScrambleSetIds(userId: string): Promise<string[]> {
+    const seen = new Set<string>();
+
+    const own = await this.sessionRepository
+      .createQueryBuilder('session')
+      .select('DISTINCT session.scrambleSetId', 'sid')
+      .where('session.userId = :userId', { userId })
+      .andWhere('session.scrambleSetId IS NOT NULL')
+      .getRawMany<{ sid: string }>();
+    own.forEach((r) => seen.add(r.sid));
+
+    const played = await this.matchRepository
+      .createQueryBuilder('m')
+      .select('DISTINCT m.scrambleSetId', 'sid')
+      .where('(m.player1Id = :userId OR m.player2Id = :userId)', { userId })
+      .andWhere('m.scrambleSetId IS NOT NULL')
+      .getRawMany<{ sid: string }>();
+    played.forEach((r) => seen.add(r.sid));
+
+    const raced = await this.ghostRaceRepository
+      .createQueryBuilder('gr')
+      .innerJoin(SoloSession, 'gs', 'gs.id = gr.ghostSessionId')
+      .select('DISTINCT gs.scrambleSetId', 'sid')
+      .where('gr.racerId = :userId', { userId })
+      .andWhere('gs.scrambleSetId IS NOT NULL')
+      .getRawMany<{ sid: string }>();
+    raced.forEach((r) => seen.add(r.sid));
+
+    return [...seen];
+  }
+
   async getRandomGhostSession(
     puzzleSize: PuzzleSize,
     excludeUserId: string,
-    aroundMmr?: number,
+    aroundMmr: number,
+    mmrRange: number,
+    seenSetIds: string[],
   ): Promise<SoloSession | null> {
     // Get IDs of ghost sessions this user has already played
     const playedRaces = await this.ghostRaceRepository.find({
@@ -296,13 +343,20 @@ export class SoloService {
       idQuery.andWhere('session.id NOT IN (:...playedSessionIds)', { playedSessionIds });
     }
 
-    // If MMR provided, try to find sessions from similar skill players
-    if (aroundMmr !== undefined) {
-      idQuery.andWhere('session.mmrAtRecording BETWEEN :minMmr AND :maxMmr', {
-        minMmr: aroundMmr - 200,
-        maxMmr: aroundMmr + 200,
-      });
+    // NEVER offer scrambles the user has already seen — a ghost whose
+    // scramble set is in the user's seen list is permanently ineligible,
+    // no matter whose recording it is.
+    if (seenSetIds.length > 0) {
+      idQuery.andWhere(
+        '(session.scrambleSetId IS NULL OR session.scrambleSetId NOT IN (:...seenSetIds))',
+        { seenSetIds },
+      );
     }
+
+    idQuery.andWhere('session.mmrAtRecording BETWEEN :minMmr AND :maxMmr', {
+      minMmr: aroundMmr - mmrRange,
+      maxMmr: aroundMmr + mmrRange,
+    });
 
     idQuery.orderBy('RANDOM()').limit(1);
 
@@ -391,6 +445,7 @@ export class SoloService {
     });
 
     const playedSessionIds = playedRaces.map(r => r.ghostSessionId);
+    const seenSetIds = await this.getSeenScrambleSetIds(racerId);
 
     // First, get just the session ID with RANDOM() ordering
     // PostgreSQL doesn't allow ORDER BY RANDOM() with SELECT DISTINCT when using joins
@@ -403,6 +458,14 @@ export class SoloService {
 
     if (playedSessionIds.length > 0) {
       idQuery.andWhere('session.id NOT IN (:...playedSessionIds)', { playedSessionIds });
+    }
+
+    // Never offer scrambles the racer has already seen.
+    if (seenSetIds.length > 0) {
+      idQuery.andWhere(
+        '(session.scrambleSetId IS NULL OR session.scrambleSetId NOT IN (:...seenSetIds))',
+        { seenSetIds },
+      );
     }
 
     idQuery.orderBy('RANDOM()').limit(1);
@@ -462,13 +525,18 @@ export class SoloService {
     isOldGhost: boolean;
   } | null> {
     const userStats = await this.usersService.getPuzzleStats(userId, puzzleSize);
+    const seenSetIds = await this.getSeenScrambleSetIds(userId);
 
-    // Try to find a ghost near user's MMR
-    let ghostSession = await this.getRandomGhostSession(puzzleSize, userId, userStats.mmr);
-
-    // If no ghost found in range, try without MMR filter
+    // Tiered selection: a ghost close to the user's rating first, then a
+    // wider band. Beyond that there is deliberately NO fallback — the caller
+    // sends the player to record their own ao5 (a fresh ghost) instead.
+    let ghostSession = await this.getRandomGhostSession(
+      puzzleSize, userId, userStats.mmr, GHOST_CLOSE_MMR_RANGE, seenSetIds,
+    );
     if (!ghostSession) {
-      ghostSession = await this.getRandomGhostSession(puzzleSize, userId);
+      ghostSession = await this.getRandomGhostSession(
+        puzzleSize, userId, userStats.mmr, GHOST_WIDE_MMR_RANGE, seenSetIds,
+      );
     }
 
     if (!ghostSession) {
@@ -528,6 +596,7 @@ export class SoloService {
       inspectionStartAt?: Date | null;
       solveStartAt?: Date | null;
     }>,
+    scrambleSetId?: string | null,
   ): Promise<void> {
     const valid = solves.filter((s) => s.scramble);
     if (valid.length === 0) return;
@@ -544,6 +613,9 @@ export class SoloService {
       startedAt: new Date(),
       endedAt: new Date(),
       mmrAtRecording: mmr,
+      // Inherit the source's scramble-set identity (match or raced ghost);
+      // a missing id means these scrambles are their own new lineage.
+      scrambleSetId: scrambleSetId ?? uuidv4(),
     });
     await this.sessionRepository.save(session);
 

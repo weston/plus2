@@ -47,6 +47,12 @@ export class SoloSession {
   averageTimeMs: number | null;
 
   // MMR at time of recording (for finding similar skill ghost opponents)
+  // Identity of the scramble sequence this session used. Shared across every
+  // ghost/match descended from the same original scrambles, so players are
+  // never offered scrambles they've already seen.
+  @Column({ name: 'scramble_set_id', type: 'varchar', length: 64, nullable: true })
+  scrambleSetId: string | null;
+
   @Column({ name: 'mmr_at_recording', nullable: true })
   mmrAtRecording: number;
 

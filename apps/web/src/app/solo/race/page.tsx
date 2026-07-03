@@ -68,7 +68,8 @@ function GhostRaceContent() {
   }, [user, accessToken, router, _hasHydrated]);
 
   // Auto-start a ghost race when arriving from the ranked "Find Race" fallback
-  // (?auto=1). The server seed-falls-back, so this always lands an opponent.
+  // (?auto=1). If there's no unseen ghost near the player's rating either,
+  // the hierarchy ends with recording your own ao5 — route there.
   const autoStartedRef = useRef(false);
   useEffect(() => {
     if (searchParams.get('auto') === '1' && !autoStartedRef.current && accessToken) {
@@ -78,6 +79,15 @@ function GhostRaceContent() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken]);
+
+  // No unseen ghosts: in the auto (ranked fallback) flow, continue straight
+  // to recording an Average of 5 on fresh scrambles.
+  useEffect(() => {
+    if (race.noGhosts && searchParams.get('auto') === '1') {
+      const size = (searchParams.get('size') as PuzzleSize) || '3x3';
+      router.replace(`/solo?auto=1&from=race&size=${size}`);
+    }
+  }, [race.noGhosts, searchParams, router]);
 
   // Start replaying ghost moves from inspection start
   const startGhostReplay = useCallback(() => {
@@ -373,8 +383,16 @@ function GhostRaceContent() {
             </p>
 
             {race.error && (
-              <div className="bg-red-500/20 border border-red-500 rounded-lg p-4 mb-6">
-                <p className="text-red-400">{race.error}</p>
+              <div className={`rounded-lg p-4 mb-6 border ${race.noGhosts ? 'bg-blue-500/10 border-blue-500' : 'bg-red-500/20 border-red-500'}`}>
+                <p className={race.noGhosts ? 'text-blue-300' : 'text-red-400'}>{race.error}</p>
+                {race.noGhosts && (
+                  <Link
+                    href={`/solo?auto=1&from=race&size=${selectedSize}`}
+                    className="btn btn-primary inline-block mt-3 px-4 py-2"
+                  >
+                    Record an Average of 5
+                  </Link>
+                )}
               </div>
             )}
 

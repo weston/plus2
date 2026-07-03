@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useState, useRef, useCallback } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
 import { useSoloSocket } from '@/hooks/useSoloSocket';
@@ -23,8 +23,19 @@ function formatTime(ms: number | null): string {
   return seconds.toFixed(2) + 's';
 }
 
+// Wrapper component to handle Suspense boundary for useSearchParams
 export default function SoloPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center"><p className="text-gray-400">Loading...</p></div>}>
+      <SoloContent />
+    </Suspense>
+  );
+}
+
+function SoloContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const fromRace = searchParams.get('from') === 'race';
   const { user, accessToken, _hasHydrated } = useAuthStore();
   const solo = useSoloSocket();
 
@@ -49,6 +60,20 @@ export default function SoloPage() {
       router.push('/login');
     }
   }, [user, accessToken, router, _hasHydrated]);
+
+  // Auto-start a recording session when arriving from the ranked flow
+  // (?auto=1): the end of the Find Race hierarchy — no human, no unseen
+  // ghost — so the player records an ao5 that becomes a ghost for others.
+  const autoStartedRef = useRef(false);
+  useEffect(() => {
+    if (searchParams.get('auto') === '1' && !autoStartedRef.current && accessToken && solo.phase === 'idle') {
+      autoStartedRef.current = true;
+      const size = (searchParams.get('size') as PuzzleSize) || '3x3';
+      setSelectedSize(size);
+      solo.startSolo(size);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken]);
 
   // Handle inspection countdown and reset state for new round
   useEffect(() => {
@@ -353,6 +378,11 @@ export default function SoloPage() {
     <div className="min-h-screen p-4 md:p-8">
       <div className="max-w-4xl mx-auto">
         {/* Header */}
+        {fromRace && (
+          <div className="bg-blue-500/10 border border-blue-500 rounded-lg p-3 mb-4 text-center text-blue-300 text-sm">
+            Nobody to race right now — this Average of 5 becomes your ghost for others to race!
+          </div>
+        )}
         <header className="flex justify-between items-center mb-6">
           <button onClick={handleBackToDashboard} className="text-gray-400 hover:text-white">
             Abandon

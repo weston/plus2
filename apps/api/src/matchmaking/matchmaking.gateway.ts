@@ -109,6 +109,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       ghostMmrAtRecording: number;
       isOldGhost: boolean;
       isSeed?: boolean; // synthetic seed ghost — don't persist a GhostRace row
+      // Scramble-set identity of the raced ghost — the racer's own snapshot
+      // inherits it (same scrambles, same lineage).
+      scrambleSetId?: string | null;
       currentRound: number;
       totalRounds: number;
       userTimes: (number | null)[];
@@ -1282,18 +1285,21 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         ? await this.soloService.findGhostFromUser(socket.userId, data.opponentId, data.puzzleSize)
         : await this.soloService.findGhostToRace(socket.userId, data.puzzleSize);
 
-      // General ranked ghost requests ALWAYS get an opponent: fall back to a
-      // synthetic seed when no real ghost is available. (A request targeting a
-      // specific player's ghost still errors if they have none.)
-      if (!ghostData && !data.opponentId) {
-        ghostData = await this.soloService.buildSeedGhostForUser(socket.userId, data.puzzleSize);
-      }
-
       if (!ghostData) {
-        const message = data.opponentId
-          ? 'No available ghosts from this player. You may have already raced all their ghosts!'
-          : 'No ghost opponents available. Try creating some ghost solves first!';
-        socket.emit('error', { code: 'NO_GHOSTS', message });
+        if (data.opponentId) {
+          socket.emit('error', {
+            code: 'NO_GHOSTS',
+            message:
+              "No available ghosts from this player — you may have already seen all of their scrambles!",
+          });
+        } else {
+          // End of the ranked hierarchy: no human, no unseen ghost near your
+          // rating. Instead of a synthetic pace bot, the player records an
+          // Average of 5 on fresh scrambles — creating a ghost for others.
+          socket.emit('ghost_race_unavailable', {
+            message: 'No unseen ghosts near your rating — record an Average of 5 for others to race!',
+          });
+        }
         return;
       }
 
@@ -1545,6 +1551,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       ghostMmrAtRecording: ghostSession.mmrAtRecording || 1000,
       isOldGhost,
       isSeed: ghostData.isSeed,
+      scrambleSetId: (ghostSession as { scrambleSetId?: string | null }).scrambleSetId ?? null,
       currentRound: 0,
       totalRounds: ghostSolves.length,
       userTimes: [],
@@ -1757,6 +1764,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
           race.puzzleSize,
           result.newMmr,
           race.userSolves,
+          race.scrambleSetId,
         );
       } catch (e) {
         console.error('Ghost snapshot (race) error:', e);
@@ -2150,6 +2158,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
             inspectionStartAt: s.p1InspectionStartAt,
             solveStartAt: s.p1SolveStartAt,
           })),
+          full.scrambleSetId,
         );
         await this.soloService.recordGhost(
           matchState.player2Id,
@@ -2163,6 +2172,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
             inspectionStartAt: s.p2InspectionStartAt,
             solveStartAt: s.p2SolveStartAt,
           })),
+          full.scrambleSetId,
         );
       } catch (e) {
         console.error('Ghost snapshot error:', e);

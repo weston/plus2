@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { v4 as uuidv4 } from 'uuid';
 import { Match } from './match.entity';
 import { Solve } from './solve.entity';
 import { UsersService } from '../users/users.service';
@@ -135,6 +136,9 @@ export class MatchesService {
       startedAt: new Date(),
       player1MmrBefore: p1Stats.mmr,
       player2MmrBefore: p2Stats.mmr,
+      // The identity of this match's scramble sequence; both players' ghost
+      // snapshots inherit it so nobody is ever offered these scrambles twice.
+      scrambleSetId: uuidv4(),
     });
 
     return this.matchRepository.save(match);
