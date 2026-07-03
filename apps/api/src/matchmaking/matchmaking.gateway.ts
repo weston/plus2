@@ -334,6 +334,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
             mmr: opponentUser.mmr,
             league: opponentUser.league,
             cubeColors: opponentUser.preferences?.cubeColors ?? null,
+            cubeLogo: opponentUser.preferences?.cubeLogo ?? null,
           },
           puzzleSize: match.puzzleSize,
           // Current score from this player's perspective so a mid-match
@@ -1734,6 +1735,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         gamesPlayed: number;
         gamesWon: number;
         cubeColors?: Record<string, string> | null;
+        cubeLogo?: string | null;
       };
       isOldGhost: boolean;
       isSeed?: boolean;
@@ -1786,8 +1788,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       ghostCountry: ghostUser.country,
       ghostGamesPlayed: ghostUser.gamesPlayed,
       ghostGamesWon: ghostUser.gamesWon,
-      // The ghost renders in its owner's colors on the racer's screen.
+      // The ghost renders in its owner's colors + logo on the racer's screen.
       ghostCubeColors: ghostUser.cubeColors ?? null,
+      ghostCubeLogo: ghostUser.cubeLogo ?? null,
     });
 
     setTimeout(() => this.startGhostRaceRound(raceId), 2000);
@@ -2103,6 +2106,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         gamesPlayed: player2.gamesPlayed,
         gamesWon: player2.gamesWon,
         cubeColors: p2User?.preferences?.cubeColors ?? null,
+        cubeLogo: p2User?.preferences?.cubeLogo ?? null,
       },
       puzzleSize,
     });
@@ -2118,6 +2122,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         gamesPlayed: player1.gamesPlayed,
         gamesWon: player1.gamesWon,
         cubeColors: p1User?.preferences?.cubeColors ?? null,
+        cubeLogo: p1User?.preferences?.cubeLogo ?? null,
       },
       puzzleSize,
     });

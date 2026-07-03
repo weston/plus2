@@ -19,6 +19,8 @@ interface TwistyCubeProps {
   // Per-face hex colors keyed by U/D/F/B/R/L; omitted faces fall back to the
   // WCA defaults. The cube rebuilds when these change.
   faceColors?: Record<string, string> | null;
+  // Image drawn on the U-face center sticker (a real cube's "logo").
+  logoUrl?: string | null;
   className?: string;
 }
 
@@ -31,6 +33,7 @@ interface CstimerCube {
   isSolved: () => boolean;
   resize: () => void;
   reset: () => void;
+  setLogo?: (url: string | null) => void;
   setSpeed: (v: number) => void;
   _ro?: ResizeObserver;
 }
@@ -116,7 +119,7 @@ function speedToVrc(speed: number): number {
 }
 
 export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function TwistyCube(
-  { puzzleSize, scramble = '', moves = [], onSolved, animationSpeed = 3, faceColors, className = '' },
+  { puzzleSize, scramble = '', moves = [], onSolved, animationSpeed = 3, faceColors, logoUrl, className = '' },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -130,6 +133,13 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
   const movesSig = moves.join(' ');
   const colorArray = toFaceColorArray(faceColors);
   const colorsSig = colorArray.join(',');
+  // Logo changes must not rebuild the cube (that would reset mid-solve) —
+  // the glue re-textures the existing sticker in place.
+  const logoUrlRef = useRef<string | null>(logoUrl ?? null);
+  useEffect(() => {
+    logoUrlRef.current = logoUrl ?? null;
+    cubeRef.current?.setLogo?.(logoUrl ?? null);
+  }, [logoUrl]);
 
   useEffect(() => {
     speedRef.current = animationSpeed;
@@ -152,6 +162,7 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
           ori: ORI,
           fit: FIT,
           faceColors: colorArray,
+          logoUrl: logoUrlRef.current || undefined,
           onSolved: () => onSolvedRef.current?.(),
         });
         // Center the square canvas within the container.

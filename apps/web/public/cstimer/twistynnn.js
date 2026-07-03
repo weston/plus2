@@ -115,6 +115,10 @@
 		}
 		// Cube Helper Linear Algebra
 
+		// Dedicated material for the U-face center sticker so a logo texture
+		// can be applied to it alone (plus2: like a real cube's brand logo).
+		var logoMaterial = null;
+
 		//Cube Object Generation
 		for (var i = 0; i < numSides; i++) {
 			var facePieces = [];
@@ -134,7 +138,17 @@
 						color: cubeOptions.faceColors[i],
 						opacity: cubeOptions.opacity
 					});
-					var meshes = [materials[key]];
+					var stickerMaterial = materials[key];
+					// U face (i === 0), exact center — odd dimensions only.
+					if (i === 0 && cubeOptions.dimension % 2 === 1 &&
+						su === (cubeOptions.dimension - 1) / 2 && sv === (cubeOptions.dimension - 1) / 2) {
+						logoMaterial = new THREE.MeshBasicMaterial({
+							color: cubeOptions.faceColors[i],
+							opacity: cubeOptions.opacity
+						});
+						stickerMaterial = logoMaterial;
+					}
+					var meshes = [stickerMaterial];
 					if (cubeOptions.stickerBorder) {
 						meshes.push(borderMaterial);
 					}
@@ -712,6 +726,7 @@
 			getFacelet: getFacelet,
 			moveCnt: moveCnt,
 			borderMaterial: borderMaterial,
+			logoMaterial: logoMaterial,
 			move2str: move2str,
 			moveInv: moveInv
 		};

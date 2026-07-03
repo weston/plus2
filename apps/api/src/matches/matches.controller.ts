@@ -118,8 +118,9 @@ export class MatchesController {
             mmr: match.player1.mmr,
             league: match.player1.league,
             cubeColors: match.player1.preferences?.cubeColors ?? null,
+            cubeLogo: match.player1.preferences?.cubeLogo ?? null,
           }
-        : { id: match.player1Id, username: 'Unknown', mmr: 0, league: 'bronze', cubeColors: null },
+        : { id: match.player1Id, username: 'Unknown', mmr: 0, league: 'bronze', cubeColors: null, cubeLogo: null },
       player2: match.player2
         ? {
             id: match.player2.id,
@@ -127,8 +128,9 @@ export class MatchesController {
             mmr: match.player2.mmr,
             league: match.player2.league,
             cubeColors: match.player2.preferences?.cubeColors ?? null,
+            cubeLogo: match.player2.preferences?.cubeLogo ?? null,
           }
-        : { id: match.player2Id, username: 'Unknown', mmr: 0, league: 'bronze', cubeColors: null },
+        : { id: match.player2Id, username: 'Unknown', mmr: 0, league: 'bronze', cubeColors: null, cubeLogo: null },
       player1Score: match.player1Score,
       player2Score: match.player2Score,
       player1MmrBefore: match.player1MmrBefore,

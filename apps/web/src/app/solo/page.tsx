@@ -40,6 +40,7 @@ function SoloContent() {
   const { user, accessToken, _hasHydrated } = useAuthStore();
   const solo = useSoloSocket();
   const myCubeColors = useCubePrefs((s) => s.colors);
+  const myCubeLogo = useCubePrefs((s) => s.logo);
 
   const [selectedSize, setSelectedSize] = useState<PuzzleSize>('3x3');
   const [inspectionTime, setInspectionTime] = useState(15);
@@ -447,6 +448,7 @@ function SoloContent() {
               moves={moves}
               onSolved={handleStopTimer}
               faceColors={myCubeColors}
+              logoUrl={myCubeLogo}
               className="h-64 md:h-96"
             />
           </div>

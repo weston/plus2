@@ -134,6 +134,7 @@ export interface UserPreferences {
   animationSpeed?: number;
   cubeColors?: Record<string, string>;
   ghostOptOut?: boolean;
+  cubeLogo?: string | null;
 }
 
 // User profile type
@@ -187,6 +188,13 @@ export const usersApi = {
 
   getPreferences: (token: string) =>
     request<UserPreferences>('/users/me/preferences', { token }),
+
+  uploadLogo: (token: string, imageBase64: string) =>
+    request<{ url: string }>('/users/me/logo', {
+      method: 'POST',
+      token,
+      body: { imageBase64 },
+    }),
 
   updatePreferences: (token: string, preferences: UserPreferences) =>
     request<UserPreferences>('/users/me/preferences', {
@@ -362,8 +370,8 @@ export interface MatchSolve {
 export interface MatchDetail {
   id: string;
   puzzleSize: string;
-  player1: { id: string; username: string; mmr: number; league: string; cubeColors?: Record<string, string> | null };
-  player2: { id: string; username: string; mmr: number; league: string; cubeColors?: Record<string, string> | null };
+  player1: { id: string; username: string; mmr: number; league: string; cubeColors?: Record<string, string> | null; cubeLogo?: string | null };
+  player2: { id: string; username: string; mmr: number; league: string; cubeColors?: Record<string, string> | null; cubeLogo?: string | null };
   player1Score: number;
   player2Score: number;
   player1MmrBefore: number;

@@ -390,6 +390,7 @@ export default function ReplayPage() {
               moves={p1Moves}
               animationSpeed={isPlaying ? 5 : 3}
               faceColors={match.player1.cubeColors}
+              logoUrl={match.player1.cubeLogo}
               className="h-64 md:h-80"
             />
 
@@ -429,6 +430,7 @@ export default function ReplayPage() {
               moves={p2Moves}
               animationSpeed={isPlaying ? 5 : 3}
               faceColors={match.player2.cubeColors}
+              logoUrl={match.player2.cubeLogo}
               className="h-64 md:h-80"
             />
 

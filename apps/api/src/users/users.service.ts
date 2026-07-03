@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from './user.entity';
@@ -253,12 +253,67 @@ export class UsersService {
 
   async updatePreferences(
     userId: string,
-    preferences: { animationSpeed?: number; cubeColors?: Record<string, string>; ghostOptOut?: boolean },
+    preferences: {
+      animationSpeed?: number;
+      cubeColors?: Record<string, string>;
+      ghostOptOut?: boolean;
+      cubeLogo?: string | null;
+    },
   ) {
+    // The logo URL renders on OTHER players' screens — never store an
+    // arbitrary URL. Only Imgur uploads (see uploadLogo) or null (removal).
+    if (preferences.cubeLogo !== undefined && preferences.cubeLogo !== null) {
+      if (!/^https:\/\/i\.imgur\.com\/[A-Za-z0-9]+\.(png|jpe?g|gif|webp)$/.test(preferences.cubeLogo)) {
+        throw new BadRequestException('Invalid logo URL');
+      }
+    }
     const user = await this.findById(userId);
     const merged = { ...user.preferences, ...preferences };
     await this.userRepository.update(userId, { preferences: merged });
     return merged;
+  }
+
+  /**
+   * Upload a cube logo image to Imgur and store the hosted URL in the user's
+   * preferences. Accepts a base64 image (data-URL prefix tolerated).
+   */
+  async uploadLogo(userId: string, imageBase64: string): Promise<{ url: string }> {
+    const base64 = imageBase64.replace(/^data:image\/[a-z+]+;base64,/, '');
+    if (!base64 || base64.length > 2_000_000) {
+      throw new BadRequestException('Image missing or too large (max ~1.5MB)');
+    }
+
+    const apiUrl = process.env.IMGUR_API_URL || 'https://api.imgur.com/3/image';
+    // Anonymous Imgur upload. The fallback is Imgur's documented example
+    // client id — register a real one and set IMGUR_CLIENT_ID for production.
+    const clientId = process.env.IMGUR_CLIENT_ID || '546c25a59c58ad7';
+
+    let link: string | undefined;
+    try {
+      const res = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Client-ID ${clientId}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ image: base64, type: 'base64' }),
+      });
+      const body = (await res.json()) as { success?: boolean; data?: { link?: string } };
+      if (!res.ok || !body?.data?.link) {
+        console.error('[LOGO] imgur upload failed', res.status, JSON.stringify(body).slice(0, 300));
+        throw new Error('upload failed');
+      }
+      link = body.data.link.replace(/^http:/, 'https:');
+    } catch {
+      throw new BadRequestException('Image upload failed — try again later');
+    }
+
+    if (!/^https:\/\/i\.imgur\.com\//.test(link)) {
+      throw new BadRequestException('Unexpected upload host');
+    }
+
+    await this.updatePreferences(userId, { cubeLogo: link });
+    return { url: link };
   }
 
   async updateCountry(userId: string, country: string) {

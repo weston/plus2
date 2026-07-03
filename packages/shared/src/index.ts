@@ -240,6 +240,8 @@ export interface ServerEvents {
       league: LeagueTier;
       // The opponent's cube color scheme (renders THEIR cube in THEIR colors)
       cubeColors?: Record<string, string> | null;
+      // The opponent's cube logo (image on their white-face center sticker)
+      cubeLogo?: string | null;
     };
     puzzleSize: PuzzleSize;
     // Present on reconnect resyncs: the current score from the receiving

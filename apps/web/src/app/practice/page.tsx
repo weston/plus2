@@ -89,6 +89,7 @@ const DEFAULT_ANIMATION_SPEED = 3;
 
 export default function PracticePage() {
   const myCubeColors = useCubePrefs((st) => st.colors);
+  const myCubeLogo = useCubePrefs((st) => st.logo);
   const { user, accessToken } = useAuthStore();
   const [puzzleSize, setPuzzleSize] = useState<PuzzleSize>('3x3');
   const [phase, setPhase] = useState<PracticePhase>('idle');
@@ -399,6 +400,7 @@ export default function PracticePage() {
                     onSolved={stopTimer}
                     animationSpeed={animationSpeed}
                     faceColors={myCubeColors}
+                    logoUrl={myCubeLogo}
                     className="h-80 md:h-[500px]"
                   />
                 </div>

@@ -42,6 +42,7 @@ function GhostRaceContent() {
   const { user, accessToken, _hasHydrated } = useAuthStore();
   const race = useGhostRaceSocket();
   const myCubeColors = useCubePrefs((s) => s.colors);
+  const myCubeLogo = useCubePrefs((s) => s.logo);
 
   const [selectedSize, setSelectedSize] = useState<PuzzleSize>('3x3');
   const [inspectionTime, setInspectionTime] = useState(15);
@@ -640,6 +641,7 @@ function GhostRaceContent() {
                 moves={moves}
                 onSolved={handleStopTimer}
                 faceColors={myCubeColors}
+                logoUrl={myCubeLogo}
                 className="h-48 md:h-64"
               />
             </div>
@@ -660,6 +662,7 @@ function GhostRaceContent() {
                 scramble={race.scramble}
                 moves={ghostMoves}
                 faceColors={race.ghostCubeColors}
+                logoUrl={race.ghostCubeLogo}
                 className="h-48 md:h-64"
               />
             </div>

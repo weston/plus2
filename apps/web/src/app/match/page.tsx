@@ -112,6 +112,7 @@ export default function MatchPage() {
   const { sendMove, sendSolveComplete, sendRematch, sendRequeue, sendMatchRejoin, sendMatchLeave, sendResign, sendMatchChat } = useSocket();
   const matchMessages = useChatStore((s) => s.matchMessages);
   const myCubeColors = useCubePrefs((s) => s.colors);
+  const myCubeLogo = useCubePrefs((s) => s.logo);
   const [chatDraft, setChatDraft] = useState('');
   const chatListRef = useRef<HTMLDivElement>(null);
 
@@ -379,6 +380,7 @@ export default function MatchPage() {
               onSolved={completeSolve}
               isInteractive
               faceColors={myCubeColors}
+              logoUrl={myCubeLogo}
               className="h-64 mb-4"
             />
 
@@ -429,6 +431,7 @@ export default function MatchPage() {
               scramble={scramble}
               moves={opponentMoves}
               faceColors={opponent.cubeColors}
+              logoUrl={opponent.cubeLogo}
               className="h-64 mb-4"
             />
 

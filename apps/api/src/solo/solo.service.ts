@@ -442,6 +442,7 @@ export class SoloService {
       gamesPlayed: number;
       gamesWon: number;
       cubeColors?: Record<string, string> | null;
+      cubeLogo?: string | null;
     };
     isOldGhost: boolean;
   } | null> {
@@ -512,6 +513,7 @@ export class SoloService {
         gamesPlayed: ghostStats?.gamesPlayed || 0,
         gamesWon: ghostStats?.gamesWon || 0,
         cubeColors: ghostUser.preferences?.cubeColors ?? null,
+        cubeLogo: ghostUser.preferences?.cubeLogo ?? null,
       },
       isOldGhost,
     };
@@ -536,6 +538,7 @@ export class SoloService {
       gamesPlayed: number;
       gamesWon: number;
       cubeColors?: Record<string, string> | null;
+      cubeLogo?: string | null;
     };
     isOldGhost: boolean;
   } | null> {
@@ -580,6 +583,7 @@ export class SoloService {
         gamesPlayed: ghostStats?.gamesPlayed || 0,
         gamesWon: ghostStats?.gamesWon || 0,
         cubeColors: ghostUser.preferences?.cubeColors ?? null,
+        cubeLogo: ghostUser.preferences?.cubeLogo ?? null,
       },
       isOldGhost,
     };

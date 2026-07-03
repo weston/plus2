@@ -103,6 +103,11 @@
     var dom = scene.getDomElement();
     container.appendChild(dom);
 
+    if (opts.logoUrl) {
+      // Applied after initializeTwisty below (setLogo loads async anyway).
+      setTimeout(function () { setLogo(opts.logoUrl); }, 0);
+    }
+
     var type = {
       type: 'cube',
       dimension: dim,
@@ -116,6 +121,51 @@
 
     // Re-fetch the twisty each time — initializeTwisty() (used by reset) makes a new one.
     function tw() { return scene.getTwisty(); }
+
+    // ---- Cube logo (image on the U-face center sticker) --------------------
+    // The vintage CanvasRenderer textures MeshBasicMaterial via material.map =
+    // { image, mapping } — no THREE.Texture needed. The logo image is
+    // composited over the face color first so transparent PNGs look right.
+    var currentLogoUrl = null;
+
+    function makeLogoCanvas(url, bgColorNum, cb) {
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = function () {
+        var SIZE = 128, PAD = 12;
+        var c = document.createElement('canvas');
+        c.width = SIZE; c.height = SIZE;
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = '#' + ('00000' + (bgColorNum >>> 0).toString(16)).slice(-6);
+        ctx.fillRect(0, 0, SIZE, SIZE);
+        var s = Math.min((SIZE - 2 * PAD) / img.width, (SIZE - 2 * PAD) / img.height);
+        var w = img.width * s, h = img.height * s;
+        ctx.drawImage(img, (SIZE - w) / 2, (SIZE - h) / 2, w, h);
+        cb(c);
+      };
+      img.onerror = function () { cb(null); };
+      img.src = url;
+    }
+
+    function applyLogoCanvas(canvas) {
+      var t = tw();
+      if (!t || !t.logoMaterial) return;
+      // This minified THREE build references UVMapping in its textured-face
+      // path but the class itself was stripped — supply it (the renderer only
+      // does an instanceof check).
+      if (!window.THREE.UVMapping) window.THREE.UVMapping = function () {};
+      t.logoMaterial.map = canvas ? { image: canvas, mapping: new window.THREE.UVMapping() } : null;
+      scene.resize(); // triggers a re-render
+    }
+
+    function setLogo(url) {
+      currentLogoUrl = url || null;
+      if (!currentLogoUrl) { applyLogoCanvas(null); return; }
+      var want = currentLogoUrl;
+      makeLogoCanvas(want, (opts.faceColors || DEFAULT_COLORS)[0], function (canvas) {
+        if (want === currentLogoUrl && canvas) applyLogoCanvas(canvas);
+      });
+    }
 
     // Fire onSolved exactly once each time a move leaves the cube solved (so the
     // page can auto-stop the timer). Re-arms when the cube leaves the solved state.
@@ -148,7 +198,11 @@
       getFacelet: function () { return tw().getFacelet(tw()); },
       isSolved: function () { return isSolvedFacelet(tw().getFacelet(tw()), dim); },
       resize: function () { scene.resize(); },
-      reset: function () { scene.initializeTwisty(type); }, // back to solved
+      reset: function () {
+        scene.initializeTwisty(type); // back to solved (fresh twisty)
+        if (currentLogoUrl) setLogo(currentLogoUrl); // re-texture the new center sticker
+      },
+      setLogo: setLogo,
       setSpeed: function (v) { _cfg.vrcSpeed = v; },
       setOri: function (o) { _cfg.vrcOri = o; scene.resize(); }
     };

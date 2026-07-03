@@ -154,6 +154,9 @@ export default function DashboardPage() {
       if (prefs.cubeColors && !cubePrefs.modified && isFactory) {
         cubePrefs.setColors(prefs.cubeColors);
       }
+      if (prefs.cubeLogo !== undefined && !cubePrefs.modified && cubePrefs.logo === null) {
+        cubePrefs.setLogo(prefs.cubeLogo);
+      }
     }).catch(() => {});
   }, [accessToken]);
 

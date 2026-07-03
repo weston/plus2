@@ -19,11 +19,14 @@ interface CubePrefsState {
   // survives reloads; the server copy (user preferences) is what travels to
   // opponents' screens.
   colors: Record<string, string>;
+  // Imgur URL of my cube logo (white-face center sticker), or null.
+  logo: string | null;
   // True once the user edits colors in THIS session — server hydration must
   // then keep its hands off (a slow GET or a stale server copy would revert
   // a fresh local pick).
   modified: boolean;
   setColors: (colors: Record<string, string>) => void;
+  setLogo: (logo: string | null) => void;
   markModified: () => void;
 }
 
@@ -31,13 +34,15 @@ export const useCubePrefs = create<CubePrefsState>()(
   persist(
     (set) => ({
       colors: DEFAULT_CUBE_COLORS,
+      logo: null,
       modified: false,
       setColors: (colors) => set({ colors: { ...DEFAULT_CUBE_COLORS, ...colors } }),
+      setLogo: (logo) => set({ logo }),
       markModified: () => set({ modified: true }),
     }),
     {
       name: 'plus2-cube-prefs',
-      partialize: (s) => ({ colors: s.colors }),
+      partialize: (s) => ({ colors: s.colors, logo: s.logo }),
     },
   ),
 );

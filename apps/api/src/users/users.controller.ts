@@ -10,8 +10,7 @@ import {
   Request,
   Optional,
   Inject,
-  forwardRef,
-} from '@nestjs/common';
+  forwardRef, Post } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { UsersService } from './users.service';
 import { IsString, MinLength, MaxLength, Matches, IsNumber, IsOptional, IsObject, IsBoolean, Min, Max, Length } from 'class-validator';
@@ -42,6 +41,16 @@ class UpdatePreferencesDto {
   @IsOptional()
   @IsBoolean()
   ghostOptOut?: boolean;
+
+  // Imgur URL set via POST /users/me/logo, or null to remove. Validated
+  // against i.imgur.com in the service.
+  @IsOptional()
+  cubeLogo?: string | null;
+}
+
+class UploadLogoDto {
+  @IsString()
+  imageBase64: string;
 }
 
 class UpdateCountryDto {
@@ -117,6 +126,15 @@ export class UsersController {
     @Body() dto: UpdatePreferencesDto,
   ) {
     return this.usersService.updatePreferences(req.user.id, dto);
+  }
+
+  @Post('me/logo')
+  @UseGuards(JwtAuthGuard)
+  async uploadLogo(
+    @Request() req: { user: { id: string } },
+    @Body() dto: UploadLogoDto,
+  ) {
+    return this.usersService.uploadLogo(req.user.id, dto.imageBase64);
   }
 
   @Put('me/country')

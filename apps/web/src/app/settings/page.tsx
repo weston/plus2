@@ -46,6 +46,9 @@ export default function SettingsPage() {
 
   // Appearance state
   const [cubeColors, setCubeColors] = useState<Record<string, string>>(DEFAULT_CUBE_COLORS);
+  const [cubeLogo, setCubeLogo] = useState<string | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [logoError, setLogoError] = useState('');
   const [animationSpeed, setAnimationSpeed] = useState(DEFAULT_ANIMATION_SPEED);
   const [ghostOptOut, setGhostOptOut] = useState(false);
   const [isSavingPrefs, setIsSavingPrefs] = useState(false);
@@ -114,6 +117,10 @@ export default function SettingsPage() {
         const merged = { ...DEFAULT_CUBE_COLORS, ...prefs.cubeColors };
         useCubePrefs.getState().setColors(merged);
         setCubeColors(merged);
+      }
+      if (prefs.cubeLogo !== undefined) {
+        useCubePrefs.getState().setLogo(prefs.cubeLogo ?? null);
+        setCubeLogo(prefs.cubeLogo ?? null);
       }
       if (prefs.animationSpeed !== undefined) {
         setAnimationSpeed(prefs.animationSpeed);
@@ -294,6 +301,57 @@ export default function SettingsPage() {
     setTimeout(() => setMessage(''), 3000);
   };
 
+  // Cube logo: downscale client-side, upload to Imgur via the API, store URL.
+  const handleLogoUpload = async (file: File | undefined | null) => {
+    if (!file || !accessToken) return;
+    setLogoError('');
+    setLogoUploading(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const img = new Image();
+        const objUrl = URL.createObjectURL(file);
+        img.onload = () => {
+          URL.revokeObjectURL(objUrl);
+          const SIZE = 256;
+          const canvas = document.createElement('canvas');
+          canvas.width = SIZE;
+          canvas.height = SIZE;
+          const ctx = canvas.getContext('2d')!;
+          const scale = Math.min(SIZE / img.width, SIZE / img.height);
+          const w = img.width * scale;
+          const h = img.height * scale;
+          ctx.drawImage(img, (SIZE - w) / 2, (SIZE - h) / 2, w, h);
+          resolve(canvas.toDataURL('image/png'));
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(objUrl);
+          reject(new Error('Could not read that image'));
+        };
+        img.src = objUrl;
+      });
+
+      const { url } = await usersApi.uploadLogo(accessToken, dataUrl);
+      setCubeLogo(url);
+      const cubePrefs = useCubePrefs.getState();
+      cubePrefs.setLogo(url);
+      cubePrefs.markModified();
+      setMessage('Logo uploaded!');
+      setTimeout(() => setMessage(''), 3000);
+    } catch (e) {
+      setLogoError(e instanceof Error ? e.message : 'Upload failed');
+    } finally {
+      setLogoUploading(false);
+    }
+  };
+
+  const handleLogoRemove = () => {
+    setCubeLogo(null);
+    const cubePrefs = useCubePrefs.getState();
+    cubePrefs.setLogo(null);
+    cubePrefs.markModified();
+    savePreferences({ cubeLogo: null });
+  };
+
   const handleCountryChange = async (newCountry: string) => {
     if (!accessToken) return;
     setCountry(newCountry);
@@ -460,7 +518,7 @@ export default function SettingsPage() {
 
             {/* Live preview */}
             <div className="mb-6">
-              <TwistyCube puzzleSize="3x3" scramble="" faceColors={cubeColors} className="h-40" />
+              <TwistyCube puzzleSize="3x3" scramble="" faceColors={cubeColors} logoUrl={cubeLogo} className="h-40" />
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
@@ -488,6 +546,45 @@ export default function SettingsPage() {
                   />
                 </div>
               ))}
+            </div>
+
+            {/* Cube Logo */}
+            <div className="mt-8 pt-6 border-t border-gray-700">
+              <h2 className="text-xl font-semibold mb-2">Cube Logo</h2>
+              <p className="text-gray-400 mb-4">
+                Like a real cube&apos;s brand sticker: upload an image and it appears on
+                the center of your white face — everywhere your cube is shown, including
+                on your opponents&apos; screens.
+              </p>
+              <div className="flex items-center gap-4">
+                {cubeLogo ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={cubeLogo} alt="Cube logo" className="w-16 h-16 rounded border border-gray-600 object-contain bg-white" />
+                ) : (
+                  <div className="w-16 h-16 rounded border border-dashed border-gray-600 flex items-center justify-center text-gray-600 text-xs">
+                    None
+                  </div>
+                )}
+                <label className={`btn btn-secondary px-4 py-2 cursor-pointer ${logoUploading ? 'opacity-50 pointer-events-none' : ''}`}>
+                  {logoUploading ? 'Uploading…' : cubeLogo ? 'Replace Logo' : 'Upload Logo'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      handleLogoUpload(e.target.files?.[0]);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+                {cubeLogo && (
+                  <button onClick={handleLogoRemove} className="text-red-400 hover:text-red-300 text-sm">
+                    Remove
+                  </button>
+                )}
+              </div>
+              {logoError && <p className="text-red-400 text-sm mt-2">{logoError}</p>}
+              <p className="text-gray-600 text-xs mt-2">Hosted on Imgur. Square images work best.</p>
             </div>
 
             {/* Animation Speed */}
