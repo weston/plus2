@@ -26,6 +26,13 @@ export class UsersService {
     private soloSolveRepository: Repository<SoloSolve>,
   ) {}
 
+  async findByUsername(username: string): Promise<User | null> {
+    return this.userRepository
+      .createQueryBuilder('user')
+      .where('LOWER(user.username) = LOWER(:username)', { username })
+      .getOne();
+  }
+
   async findById(id: string): Promise<User> {
     const user = await this.userRepository.findOne({ where: { id } });
     if (!user) {

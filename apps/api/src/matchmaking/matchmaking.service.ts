@@ -39,6 +39,9 @@ export interface Challenge {
   creatorCountry: string | null;
   creatorGamesPlayed: number;
   creatorGamesWon: number;
+  // Direct challenge: when set, only this user may join.
+  targetUserId?: string | null;
+  targetUsername?: string | null;
 }
 
 @Injectable()
@@ -203,6 +206,7 @@ export class MatchmakingService {
     userId: string,
     socketId: string,
     puzzleSize: PuzzleSize,
+    target?: { userId: string; username: string } | null,
   ): Promise<Challenge> {
     const user = await this.userRepository.findOne({ where: { id: userId } });
     if (!user) throw new Error('User not found');
@@ -230,6 +234,8 @@ export class MatchmakingService {
       creatorCountry: user.country || null,
       creatorGamesPlayed: stats?.gamesPlayed || 0,
       creatorGamesWon: stats?.gamesWon || 0,
+      targetUserId: target?.userId ?? null,
+      targetUsername: target?.username ?? null,
     };
 
     this.challenges.set(code, challenge);
@@ -250,11 +256,19 @@ export class MatchmakingService {
     this.challenges.delete(code.toUpperCase());
   }
 
-  deleteChallengeByCreator(userId: string): void {
+  // Returns the deleted challenges so callers can notify their targets.
+  // `onlySocketId` scopes deletion to challenges CREATED BY THAT SOCKET —
+  // disconnect cleanup must pass it, or a stale socket's late ping-timeout
+  // (processed up to ~45s after the fact) deletes a challenge the user just
+  // created from their CURRENT socket.
+  deleteChallengeByCreator(userId: string, onlySocketId?: string): Challenge[] {
+    const deleted: Challenge[] = [];
     for (const [code, challenge] of this.challenges.entries()) {
-      if (challenge.creatorId === userId) {
-        this.challenges.delete(code);
-      }
+      if (challenge.creatorId !== userId) continue;
+      if (onlySocketId && challenge.creatorSocketId !== onlySocketId) continue;
+      this.challenges.delete(code);
+      deleted.push(challenge);
     }
+    return deleted;
   }
 }

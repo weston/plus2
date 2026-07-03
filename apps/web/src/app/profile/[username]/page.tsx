@@ -517,15 +517,26 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            {/* Race Against Ghosts Button */}
-            {user && user.id !== profile.id && availableGhostsCount > 0 && (
-              <Link
-                href={`/solo/race?opponent=${profile.id}`}
-                className="px-4 py-2 bg-orange-600 hover:bg-orange-700 rounded-lg font-medium transition-all"
-              >
-                Race Ghost ({availableGhostsCount})
-              </Link>
-            )}
+            <div className="flex items-center gap-2">
+              {/* Direct challenge (they must be online to receive it) */}
+              {user && user.id !== profile.id && (
+                <Link
+                  href={`/challenge?to=${encodeURIComponent(profile.username)}`}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-all"
+                >
+                  Challenge
+                </Link>
+              )}
+              {/* Race Against Ghosts Button */}
+              {user && user.id !== profile.id && availableGhostsCount > 0 && (
+                <Link
+                  href={`/solo/race?opponent=${profile.id}`}
+                  className="px-4 py-2 bg-orange-600 hover:bg-orange-700 rounded-lg font-medium transition-all"
+                >
+                  Race Ghost ({availableGhostsCount})
+                </Link>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-4 gap-4 text-center">

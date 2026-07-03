@@ -215,6 +215,7 @@ export interface ClientEvents {
   // Concede immediately (forfeit loss).
   match_resign: Record<string, never>;
   // Global chat (WCA-verified accounts may send) + in-match chat.
+  challenge_decline: { code: string };
   chat_join: Record<string, never>;
   chat_leave: Record<string, never>;
   chat_send: { text: string };
@@ -295,6 +296,13 @@ export interface ServerEvents {
     newLeague: LeagueTier;
   };
   opponent_disconnect: Record<string, never>;
+  challenge_incoming: {
+    code: string;
+    puzzleSize: PuzzleSize;
+    from: { id: string; username: string; mmr: number; league: LeagueTier; country?: string | null };
+  };
+  challenge_declined: { username: string };
+  challenge_revoked: { code: string };
   chat_joined: {
     canSend: boolean;
     messages: Array<{ id?: string; userId: string; username: string; country?: string | null; text: string; ts: number }>;

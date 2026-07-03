@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
@@ -16,10 +16,12 @@ function ChallengeContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const joinCode = searchParams.get('code');
+  const targetUsername = searchParams.get('to');
 
   const { user, accessToken, _hasHydrated } = useAuthStore();
   const { phase } = useGameStore();
   const { challenge, challengeError, createChallenge, cancelChallenge, joinChallenge } = useSocket();
+  const declinedBy = useChallengeStore((s) => s.declinedBy);
 
   const [selectedSize, setSelectedSize] = useState<PuzzleSize>('3x3');
   const [joinInput, setJoinInput] = useState(joinCode || '');
@@ -38,6 +40,16 @@ function ChallengeContent() {
       joinChallenge(joinCode);
     }
   }, [joinCode, accessToken, challenge, joinChallenge]);
+
+  // Direct challenge (?to=username from a profile): send it immediately.
+  const directSentRef = useRef(false);
+  useEffect(() => {
+    if (targetUsername && accessToken && !challenge && !directSentRef.current) {
+      directSentRef.current = true;
+      createChallenge(selectedSize, targetUsername);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetUsername, accessToken]);
 
   // Redirect to match when found
   useEffect(() => {
@@ -99,39 +111,49 @@ function ChallengeContent() {
         {challenge ? (
           // Waiting for opponent
           <div className="card text-center">
-            <h2 className="text-xl font-semibold mb-6">Challenge Created</h2>
+            <h2 className="text-xl font-semibold mb-6">
+              {challenge.targetUsername ? `Challenge sent to ${challenge.targetUsername}` : 'Challenge Created'}
+            </h2>
 
-            <div className="mb-6">
-              <p className="text-gray-400 mb-2">Share this code with a friend:</p>
-              <div className="text-4xl font-mono font-bold tracking-widest text-blue-400 mb-4">
-                {challenge.code}
-              </div>
-              <div className="text-sm text-gray-500">
-                Puzzle: {challenge.puzzleSize}
-              </div>
-            </div>
+            {!challenge.targetUsername && (
+              <>
+                <div className="mb-6">
+                  <p className="text-gray-400 mb-2">Share this code with a friend:</p>
+                  <div className="text-4xl font-mono font-bold tracking-widest text-blue-400 mb-4">
+                    {challenge.code}
+                  </div>
+                  <div className="text-sm text-gray-500">
+                    Puzzle: {challenge.puzzleSize}
+                  </div>
+                </div>
 
-            <div className="mb-6">
-              <p className="text-gray-400 mb-2">Or share this link:</p>
-              <div className="flex gap-2 justify-center">
-                <input
-                  type="text"
-                  readOnly
-                  value={`${typeof window !== 'undefined' ? window.location.origin : ''}/challenge?code=${challenge.code}`}
-                  className="input text-center text-sm flex-1 max-w-md"
-                />
-                <button
-                  onClick={handleCopyLink}
-                  className="btn btn-secondary px-4"
-                >
-                  {copied ? 'Copied!' : 'Copy'}
-                </button>
-              </div>
-            </div>
+                <div className="mb-6">
+                  <p className="text-gray-400 mb-2">Or share this link:</p>
+                  <div className="flex gap-2 justify-center">
+                    <input
+                      type="text"
+                      readOnly
+                      value={`${typeof window !== 'undefined' ? window.location.origin : ''}/challenge?code=${challenge.code}`}
+                      className="input text-center text-sm flex-1 max-w-md"
+                    />
+                    <button
+                      onClick={handleCopyLink}
+                      className="btn btn-secondary px-4"
+                    >
+                      {copied ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
 
             <div className="flex items-center justify-center gap-2 text-gray-400 mb-8">
               <span className="animate-spin">&#9696;</span>
-              <span>Waiting for opponent to join...</span>
+              <span>
+                {challenge.targetUsername
+                  ? `Waiting for ${challenge.targetUsername} to accept... (${challenge.puzzleSize})`
+                  : 'Waiting for opponent to join...'}
+              </span>
             </div>
 
             <button
@@ -201,7 +223,12 @@ function ChallengeContent() {
                   maxLength={6}
                 />
 
-                {challengeError && (
+                {declinedBy && (
+              <div className="bg-yellow-500/10 border border-yellow-600 rounded-lg p-4 mb-6">
+                <p className="text-yellow-400">{declinedBy} declined your challenge.</p>
+              </div>
+            )}
+            {challengeError && (
                   <p className="text-red-500 text-center">{challengeError}</p>
                 )}
 

@@ -166,6 +166,7 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
     const challengeStore = useChallengeStore.getState();
     challengeStore.setChallenge(null);
     challengeStore.setError(null);
+    challengeStore.setIncoming(null);
     useChatStore.getState().resetMatchChat();
 
     useGameStore.getState().startMatch(
@@ -315,14 +316,33 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
   });
 
   // Challenge events
-  socket.on('challenge_created', (data: { code: string; puzzleSize: PuzzleSize }) => {
-    const challengeStore = useChallengeStore.getState();
-    challengeStore.setChallenge({ code: data.code, puzzleSize: data.puzzleSize });
-    challengeStore.setError(null);
+  socket.on('challenge_created', (data: { code: string; puzzleSize: PuzzleSize; targetUsername?: string | null }) => {
+    useChallengeStore.getState().setChallenge({
+      code: data.code,
+      puzzleSize: data.puzzleSize,
+      targetUsername: data.targetUsername ?? null,
+    });
+    useChallengeStore.getState().setDeclinedBy(null);
   });
 
   socket.on('challenge_cancelled', () => {
     useChallengeStore.getState().setChallenge(null);
+  });
+
+  // Direct challenges: someone knocked; they declined mine; they withdrew.
+  socket.on('challenge_incoming', (data: ServerEvents['challenge_incoming']) => {
+    useChallengeStore.getState().setIncoming(data);
+  });
+
+  socket.on('challenge_declined', (data: { username: string }) => {
+    const store = useChallengeStore.getState();
+    store.setDeclinedBy(data.username);
+    store.setChallenge(null);
+  });
+
+  socket.on('challenge_revoked', (data: { code: string }) => {
+    const store = useChallengeStore.getState();
+    if (store.incoming?.code === data.code) store.setIncoming(null);
   });
 
   // Global chat (front page): joined confirmation carries recent history and
@@ -438,9 +458,16 @@ export function useSocket() {
   }, []);
 
   // Challenge actions
-  const createChallenge = useCallback((size: PuzzleSize) => {
-    useChallengeStore.getState().setError(null);
-    ensureSocket()?.emit('challenge_create', { puzzleSize: size });
+  const createChallenge = useCallback((size: PuzzleSize, targetUsername?: string) => {
+    const store = useChallengeStore.getState();
+    store.setError(null);
+    store.setDeclinedBy(null);
+    ensureSocket()?.emit('challenge_create', { puzzleSize: size, targetUsername });
+  }, []);
+
+  const declineChallenge = useCallback((code: string) => {
+    ensureSocket()?.emit('challenge_decline', { code });
+    useChallengeStore.getState().setIncoming(null);
   }, []);
 
   const cancelChallenge = useCallback(() => {
@@ -490,6 +517,7 @@ export function useSocket() {
     createChallenge,
     cancelChallenge,
     joinChallenge,
+    declineChallenge,
     // Chat
     joinChat,
     leaveChat,

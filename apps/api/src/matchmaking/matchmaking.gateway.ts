@@ -90,6 +90,17 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   // Matchmaking interval
   private matchmakingInterval: NodeJS.Timeout | null = null;
 
+  /** Every live socket for a user (they may have several tabs open). */
+  private findAllSocketsByUserId(userId: string): AuthenticatedSocket[] {
+    const result: AuthenticatedSocket[] = [];
+    const socketsMap = this.server?.sockets as unknown as Map<string, Socket>;
+    socketsMap?.forEach((s) => {
+      const as = s as AuthenticatedSocket;
+      if (as.userId === userId) result.push(as);
+    });
+    return result;
+  }
+
   // Chat rate limiting: userId -> last accepted message timestamp
   private chatLastSentAt = new Map<string, number>();
   private readonly CHAT_MIN_INTERVAL_MS = 1500;
@@ -421,22 +432,15 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   }
 
   handleDisconnect(socket: AuthenticatedSocket) {
-    // Each page mounts its own socket, so navigation (e.g. /challenge → /match)
-    // disconnects the old socket and connects a new one. If the new socket's
-    // connection was processed first, this disconnect is for a STALE socket of
-    // a user who is still here — skip the destructive cleanup (challenge
-    // deletion and the match abandon timer, which would otherwise forfeit a
-    // still-connected player 30s later with nothing left to cancel it).
-    const hasOtherLiveSocket = socket.userId
-      ? !!this.findOtherSocketByUserId(socket.userId, socket.id)
-      : false;
-
-    // Remove from queue and delete any pending challenges
+    // Remove from queue. Challenges are deliberately NOT deleted here:
+    // disconnects can be spurious or processed long after the fact (ping
+    // timeouts, transient network blips, laptop sleep), which used to kill a
+    // challenge the user still wanted. A challenge dies when it's joined,
+    // explicitly cancelled (page unmount sends challenge_cancel), declined,
+    // expired (10 min TTL), or when a joiner finds its creator offline —
+    // handleChallengeJoin validates that and cleans up.
     if (socket.userId) {
       this.matchmakingService.removeFromQueue(socket.userId);
-      if (!hasOtherLiveSocket) {
-        this.matchmakingService.deleteChallengeByCreator(socket.userId);
-      }
     }
 
     // Handle ghost race disconnect - treat as abandon (forfeit)
@@ -969,7 +973,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   @SubscribeMessage('challenge_create')
   async handleChallengeCreate(
     @ConnectedSocket() socket: AuthenticatedSocket,
-    @MessageBody() data: { puzzleSize: PuzzleSize },
+    @MessageBody() data: { puzzleSize: PuzzleSize; targetUsername?: string },
   ) {
     if (!socket.userId) {
       socket.emit('error', { code: 'NOT_AUTHENTICATED', message: 'Not authenticated' });
@@ -981,28 +985,93 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       return;
     }
 
+    // Direct challenge: resolve the target and require them online — the
+    // point is a knock on their door, not a dead link.
+    let target: { userId: string; username: string } | null = null;
+    let targetSockets: AuthenticatedSocket[] = [];
+    if (data.targetUsername) {
+      const targetUser = await this.usersService.findByUsername(data.targetUsername).catch(() => null);
+      if (!targetUser) {
+        socket.emit('error', { code: 'TARGET_NOT_FOUND', message: 'No player with that username' });
+        return;
+      }
+      if (targetUser.id === socket.userId) {
+        socket.emit('error', { code: 'CANNOT_CHALLENGE_SELF', message: 'You cannot challenge yourself' });
+        return;
+      }
+      targetSockets = this.findAllSocketsByUserId(targetUser.id);
+      if (targetSockets.length === 0) {
+        socket.emit('error', {
+          code: 'TARGET_OFFLINE',
+          message: `${targetUser.username} isn't online right now`,
+        });
+        return;
+      }
+      target = { userId: targetUser.id, username: targetUser.username };
+    }
+
     try {
       const challenge = await this.matchmakingService.createChallenge(
         socket.userId,
         socket.id,
         data.puzzleSize,
+        target,
       );
 
       socket.emit('challenge_created', {
         code: challenge.code,
         puzzleSize: challenge.puzzleSize,
+        targetUsername: challenge.targetUsername ?? null,
       });
 
-          } catch (error) {
+      // Knock on every tab the target has open.
+      for (const ts of targetSockets) {
+        ts.emit('challenge_incoming', {
+          code: challenge.code,
+          puzzleSize: challenge.puzzleSize,
+          from: {
+            id: challenge.creatorId,
+            username: challenge.creatorUsername,
+            mmr: challenge.creatorMmr,
+            league: challenge.creatorLeague,
+            country: challenge.creatorCountry,
+          },
+        });
+      }
+    } catch (error) {
       socket.emit('error', { code: 'CHALLENGE_ERROR', message: 'Failed to create challenge' });
     }
+  }
+
+  /** Target of a direct challenge turns it down: remove it, tell the creator. */
+  @SubscribeMessage('challenge_decline')
+  handleChallengeDecline(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { code: string },
+  ) {
+    if (!socket.userId || !data?.code) return;
+    const challenge = this.matchmakingService.getChallenge(data.code);
+    if (!challenge || challenge.targetUserId !== socket.userId) return;
+
+    this.matchmakingService.deleteChallenge(data.code);
+    const socketsMap = this.server?.sockets as unknown as Map<string, Socket>;
+    const creatorSocket = (socketsMap?.get(challenge.creatorSocketId) ??
+      this.findSocketByUserId(challenge.creatorId)) as AuthenticatedSocket | undefined;
+    creatorSocket?.emit('challenge_declined', { username: socket.username || 'Player' });
   }
 
   @SubscribeMessage('challenge_cancel')
   handleChallengeCancel(@ConnectedSocket() socket: AuthenticatedSocket) {
     if (socket.userId) {
-      this.matchmakingService.deleteChallengeByCreator(socket.userId);
+      const deleted = this.matchmakingService.deleteChallengeByCreator(socket.userId);
       socket.emit('challenge_cancelled', {});
+      // Dismiss any incoming-challenge banners the targets are looking at.
+      for (const ch of deleted) {
+        if (!ch.targetUserId) continue;
+        for (const ts of this.findAllSocketsByUserId(ch.targetUserId)) {
+          ts.emit('challenge_revoked', { code: ch.code });
+        }
+      }
     }
   }
 
@@ -1029,6 +1098,14 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     if (challenge.creatorId === socket.userId) {
       socket.emit('error', { code: 'CANNOT_JOIN_OWN', message: 'Cannot join your own challenge' });
+      return;
+    }
+
+    if (challenge.targetUserId && challenge.targetUserId !== socket.userId) {
+      socket.emit('error', {
+        code: 'CHALLENGE_NOT_FOUND',
+        message: 'This challenge was sent to another player',
+      });
       return;
     }
 
