@@ -247,7 +247,7 @@ export function useGhostRaceSocket() {
     });
 
     // End of the ranked hierarchy: no human, no unseen ghost — the player
-    // should record an Average of 5 (which becomes their ghost) instead.
+    // should record 5 solves (which become their ghost) instead.
     socket.on('ghost_race_unavailable', (data: { message: string }) => {
       setState((prev) => ({
         ...prev,
@@ -286,9 +286,9 @@ export function useGhostRaceSocket() {
     }
   }, []);
 
-  const sendComplete = useCallback((isDnf: boolean = false) => {
+  const sendComplete = useCallback((isDnf: boolean, solvedMoveCount?: number) => {
     if (socketRef.current) {
-      socketRef.current.emit('ghost_race_complete', { isDnf });
+      socketRef.current.emit('ghost_race_complete', { isDnf, solvedMoveCount });
     }
   }, []);
 

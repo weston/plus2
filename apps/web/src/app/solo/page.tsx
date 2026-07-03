@@ -41,6 +41,7 @@ function SoloContent() {
   const solo = useSoloSocket();
   const myCubeColors = useCubePrefs((s) => s.colors);
   const myCubeLogo = useCubePrefs((s) => s.logo);
+  const cubeSpeed = useCubePrefs((s) => s.speed);
 
   const [selectedSize, setSelectedSize] = useState<PuzzleSize>('3x3');
   const [inspectionTime, setInspectionTime] = useState(15);
@@ -201,6 +202,17 @@ function SoloContent() {
     // Check if cube is solved
     const isSolved = await cubeRef.current?.checkSolved() ?? false;
 
+    // Accidental keypresses right as the solve ends register extra moves —
+    // trim to the exact solving prefix so the recording (a future ghost) and
+    // the displayed cube end truly solved.
+    if (isSolved) {
+      const n = cubeRef.current?.getSolvedMoveCount();
+      if (typeof n === 'number' && n < recordedMovesRef.current.length) {
+        recordedMovesRef.current = recordedMovesRef.current.slice(0, n);
+        setMoves((prev) => prev.slice(0, n));
+      }
+    }
+
     // Send all recorded moves with the completion event
     // Include the client-calculated time since server doesn't track solve start anymore
     solo.sendComplete(recordedMovesRef.current, !isSolved, finalTimeMs);
@@ -245,6 +257,18 @@ function SoloContent() {
   if (!user) return null;
 
   // Idle state - show mode selection, then puzzle selection
+  // Automatic flow (Find Race fallback): recording starts by itself; show a
+  // quiet setup screen instead of flashing the manual start UI.
+  if (searchParams.get('auto') === '1' && solo.phase === 'idle') {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
+        <span className="animate-spin text-3xl text-blue-400">&#9696;</span>
+        <p className="text-gray-300">Nobody to race right now — setting up 5 solo solves…</p>
+        <p className="text-gray-500 text-sm">Your solves become a ghost others can race.</p>
+      </div>
+    );
+  }
+
   if (solo.phase === 'idle') {
     return (
       <div className="min-h-screen p-8">
@@ -383,7 +407,7 @@ function SoloContent() {
         {/* Header */}
         {fromRace && (
           <div className="bg-blue-500/10 border border-blue-500 rounded-lg p-3 mb-4 text-center text-blue-300 text-sm">
-            Nobody to race right now — this Average of 5 becomes your ghost for others to race!
+            Nobody to race right now — these 5 solves become your ghost for others to race!
           </div>
         )}
         <header className="flex justify-between items-center mb-6">
@@ -449,6 +473,7 @@ function SoloContent() {
               onSolved={handleStopTimer}
               faceColors={myCubeColors}
               logoUrl={myCubeLogo}
+              animationSpeed={cubeSpeed}
               className="h-64 md:h-96"
             />
           </div>

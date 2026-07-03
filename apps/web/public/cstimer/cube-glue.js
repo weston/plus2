@@ -169,12 +169,19 @@
 
     // Fire onSolved exactly once each time a move leaves the cube solved (so the
     // page can auto-stop the timer). Re-arms when the cube leaves the solved state.
+    // committedCount tracks every committed move (scramble replay included) so
+    // pages can identify exactly which move solved the cube and trim trailing
+    // accidental inputs (see getCommitted/getSolvedAt).
     var solvedFired = false;
+    var committedCount = 0;
+    var solvedAtCount = -1;
     scene.addMoveListener(function (move, step) {
       if (step !== 2) return; // 2 = move animation finished (state committed)
+      committedCount++;
       var solved = isSolvedFacelet(tw().getFacelet(tw()), dim);
       if (solved && !solvedFired) {
         solvedFired = true;
+        solvedAtCount = committedCount;
         if (typeof opts.onSolved === 'function') opts.onSolved();
       } else if (!solved) {
         solvedFired = false;
@@ -203,6 +210,8 @@
         if (currentLogoUrl) setLogo(currentLogoUrl); // re-texture the new center sticker
       },
       setLogo: setLogo,
+      getCommitted: function () { return committedCount; },
+      getSolvedAt: function () { return solvedAtCount; },
       setSpeed: function (v) { _cfg.vrcSpeed = v; },
       setOri: function (o) { _cfg.vrcOri = o; scene.resize(); }
     };

@@ -72,6 +72,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       // wall-clock versions remain the shared replay timestamps.
       player1SolveStartMono?: number;
       player2SolveStartMono?: number;
+      // Set once the player's solve for the current round is recorded — moves
+      // arriving afterwards are accidental trailing inputs and get dropped.
+      player1Done?: boolean;
+      player2Done?: boolean;
       player1SolveTimeout?: NodeJS.Timeout;
       player2SolveTimeout?: NodeJS.Timeout;
       // Set when a player deliberately left the match page (match_leave):
@@ -774,6 +778,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const serverTs = Date.now();
 
     const isPlayer1 = socket.userId === match.player1Id;
+    // The solve is over for this player — drop trailing accidental inputs
+    // (they'd un-solve the cube on the opponent's screen and in the replay).
+    if (isPlayer1 ? match.player1Done : match.player2Done) return;
     const isRotation = this.ROTATION_MOVES.includes(data.move);
 
     // Check if this is the first non-rotation move (starts the solve)
@@ -865,7 +872,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   @SubscribeMessage('solve_complete')
   async handleSolveComplete(
     @ConnectedSocket() socket: AuthenticatedSocket,
-    @MessageBody() data: { timeMs: number | null },
+    @MessageBody() data: { timeMs: number | null; solvedMoveCount?: number },
   ) {
     if (!socket.matchId || !socket.userId) return;
 
@@ -889,6 +896,14 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // is a DNF, not a completed solve. (Previously the server "helpfully"
     // computed a time and marked it completed, so stopping on an unsolved
     // cube could win rounds.)
+    if (isPlayer1) match.player1Done = true;
+    else match.player2Done = true;
+
+    const solvedMoveCount =
+      typeof data?.solvedMoveCount === 'number' && data.solvedMoveCount >= 0
+        ? Math.floor(data.solvedMoveCount)
+        : null;
+
     if (data?.timeMs == null) {
       const result = await this.matchesService.recordDNF(
         socket.matchId,
@@ -928,6 +943,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       match.currentRound,
       socket.userId,
       timeMs,
+      solvedMoveCount,
     );
 
     if (!result) return;
@@ -935,8 +951,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // Send the SAME time to BOTH players
     socket.emit('my_solve_time', { timeMs: result.timeMs });
 
-    // Notify opponent of completion with the SAME time
-    opponentSocket?.emit('opponent_done', { timeMs: result.timeMs });
+    // Notify opponent of completion with the SAME time (and the true move
+    // count so their view trims trailing accidental inputs)
+    opponentSocket?.emit('opponent_done', { timeMs: result.timeMs, moveCount: solvedMoveCount });
 
     // Check if round is complete
     if (result.roundComplete) {
@@ -1500,9 +1517,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         } else {
           // End of the ranked hierarchy: no human, no unseen ghost near your
           // rating. Instead of a synthetic pace bot, the player records an
-          // Average of 5 on fresh scrambles — creating a ghost for others.
+          // set of 5 solves on fresh scrambles — creating a ghost for others.
           socket.emit('ghost_race_unavailable', {
-            message: 'No unseen ghosts near your rating — record an Average of 5 for others to race!',
+            message: 'No unseen ghosts near your rating — record 5 solves for others to race!',
           });
         }
         return;
@@ -1554,7 +1571,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   @SubscribeMessage('ghost_race_complete')
   async handleGhostRaceComplete(
     @ConnectedSocket() socket: AuthenticatedSocket,
-    @MessageBody() data?: { isDnf?: boolean },
+    @MessageBody() data?: { isDnf?: boolean; solvedMoveCount?: number },
   ) {
     if (!socket.ghostRaceId || !socket.userId || !this.soloService) return;
 
@@ -1592,6 +1609,16 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // Snapshot the racer's solve — their race doubles as a ghost recording.
     const ghostSolveForRound = race.ghostSolves[race.currentRound - 1];
     if (ghostSolveForRound) {
+      // Drop accidental trailing inputs typed as the solve ended — the ghost
+      // recording must end at the true finishing state.
+      if (
+        typeof data?.solvedMoveCount === 'number' &&
+        data.solvedMoveCount >= 0 &&
+        data.solvedMoveCount < race.currentMoves.length
+      ) {
+        race.currentMoves = race.currentMoves.slice(0, Math.floor(data.solvedMoveCount));
+      }
+
       race.userSolves.push({
         roundNumber: race.currentRound,
         scramble: ghostSolveForRound.scramble,
@@ -2151,6 +2178,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     matchState.player2SolveStartServerMs = undefined;
     matchState.player1SolveStartMono = undefined;
     matchState.player2SolveStartMono = undefined;
+    matchState.player1Done = false;
+    matchState.player2Done = false;
     // Clear any existing solve timeouts
     if (matchState.player1SolveTimeout) {
       clearTimeout(matchState.player1SolveTimeout);

@@ -128,6 +128,7 @@ export default function SettingsPage() {
       }
       if (prefs.animationSpeed !== undefined) {
         setAnimationSpeed(prefs.animationSpeed);
+        useCubePrefs.getState().setSpeed(prefs.animationSpeed);
       }
     }).catch(() => {
       // Failed to load — unlock with defaults rather than locking forever.
@@ -285,6 +286,9 @@ export default function SettingsPage() {
   // Animation speed handler
   const handleAnimationSpeedChange = (speed: number) => {
     setAnimationSpeed(speed);
+    const cubePrefs = useCubePrefs.getState();
+    cubePrefs.setSpeed(speed);
+    cubePrefs.markModified();
     savePreferences({ animationSpeed: speed });
   };
 
@@ -520,7 +524,7 @@ export default function SettingsPage() {
             <div className={prefsLoaded ? '' : 'pointer-events-none opacity-50'} aria-busy={!prefsLoaded}>
             {/* Live preview */}
             <div className="mb-6">
-              <TwistyCube puzzleSize="3x3" scramble="" faceColors={cubeColors} logoUrl={cubeLogo} className="h-40" />
+              <TwistyCube puzzleSize="3x3" scramble="" faceColors={cubeColors} logoUrl={cubeLogo} animationSpeed={animationSpeed} className="h-40" />
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
@@ -593,7 +597,7 @@ export default function SettingsPage() {
             <div className="mt-8 pt-6 border-t border-gray-700">
               <h2 className="text-xl font-semibold mb-4">Animation Speed</h2>
               <p className="text-gray-400 mb-4">
-                Control how fast cube moves animate during practice.
+                Control how fast cube moves animate in zen mode.
               </p>
               <div className="bg-gray-800 p-4 rounded-lg">
                 <input

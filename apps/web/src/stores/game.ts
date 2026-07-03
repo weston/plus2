@@ -105,7 +105,8 @@ interface GameState {
   addMyMove: (move: string) => void;
   addOpponentMove: (move: string) => void;
   setSolveComplete: (myTime: number | null) => void;
-  setOpponentDone: (opponentTime: number | null) => void;
+  trimMyMoves: (count: number) => void;
+  setOpponentDone: (opponentTime: number | null, moveCount?: number | null) => void;
   setOpponentStarted: (clientTs: number) => void;
   setOpponentMoveTs: (clientTs: number) => void;
   setRoundResult: (winner: 'you' | 'opponent' | 'draw', scores: { you: number; opponent: number }) => void;
@@ -275,8 +276,20 @@ export const useGameStore = create<GameState>((set, get) => {
     set({ phase: 'waiting_opponent', myTime }),
 
   // opponentTime === null with opponentDone means the opponent DNF'd.
-  setOpponentDone: (opponentTime) =>
-    set({ opponentTime, opponentDone: true }),
+  trimMyMoves: (count) =>
+    set((s) => (count < s.myMoves.length ? { myMoves: s.myMoves.slice(0, count) } : {})),
+
+  // moveCount: the opponent's true solving-move count — trailing accidental
+  // inputs beyond it are dropped so their cube displays the finished state.
+  setOpponentDone: (opponentTime, moveCount) =>
+    set((s) => ({
+      opponentTime,
+      opponentDone: true,
+      opponentMoves:
+        typeof moveCount === 'number' && moveCount < s.opponentMoves.length
+          ? s.opponentMoves.slice(0, moveCount)
+          : s.opponentMoves,
+    })),
 
   setOpponentStarted: (clientTs) =>
     set({

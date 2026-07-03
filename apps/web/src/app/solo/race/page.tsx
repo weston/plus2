@@ -44,6 +44,7 @@ function GhostRaceContent() {
   const race = useGhostRaceSocket();
   const myCubeColors = useCubePrefs((s) => s.colors);
   const myCubeLogo = useCubePrefs((s) => s.logo);
+  const cubeSpeed = useCubePrefs((s) => s.speed);
 
   const [selectedSize, setSelectedSize] = useState<PuzzleSize>('3x3');
   const [inspectionTime, setInspectionTime] = useState(15);
@@ -85,7 +86,7 @@ function GhostRaceContent() {
   }, [accessToken]);
 
   // No unseen ghosts: in the auto (ranked fallback) flow, continue straight
-  // to recording an Average of 5 on fresh scrambles.
+  // to recording 5 solves on fresh scrambles.
   useEffect(() => {
     if (race.noGhosts && searchParams.get('auto') === '1') {
       const size = (searchParams.get('size') as PuzzleSize) || '3x3';
@@ -327,7 +328,17 @@ function GhostRaceContent() {
 
     // Check if cube is solved — stopping on an unsolved cube is a DNF.
     const isSolved = await cubeRef.current?.checkSolved() ?? false;
-    race.sendComplete(!isSolved);
+    // Trim accidental trailing inputs so the displayed cube and the server's
+    // recorded move list end at the true finishing state.
+    let solvedMoveCount: number | undefined;
+    if (isSolved) {
+      const n = cubeRef.current?.getSolvedMoveCount();
+      if (typeof n === 'number') {
+        solvedMoveCount = n;
+        setMoves((prev) => (n < prev.length ? prev.slice(0, n) : prev));
+      }
+    }
+    race.sendComplete(!isSolved, solvedMoveCount);
   }, [race.sendComplete]);
 
   // Spacebar handler
@@ -367,6 +378,18 @@ function GhostRaceContent() {
 
   if (!user) return null;
 
+  // Automatic flow (from Find Race): never show the manual selector — the
+  // race auto-starts, and if no ghost exists we bounce to recording an ao5.
+  // A plain searching screen keeps it feeling like one continuous search.
+  if (searchParams.get('auto') === '1' && (race.phase === 'idle' || race.phase === 'starting')) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
+        <span className="animate-spin text-3xl text-blue-400">&#9696;</span>
+        <p className="text-gray-300">Finding you a race…</p>
+      </div>
+    );
+  }
+
   // Idle state - show start screen
   if (race.phase === 'idle') {
     return (
@@ -394,7 +417,7 @@ function GhostRaceContent() {
                     href={`/solo?auto=1&from=race&size=${selectedSize}`}
                     className="btn btn-primary inline-block mt-3 px-4 py-2"
                   >
-                    Record an Average of 5
+                    Record 5 Solves
                   </Link>
                 )}
               </div>
@@ -654,6 +677,7 @@ function GhostRaceContent() {
                 onSolved={handleStopTimer}
                 faceColors={myCubeColors}
                 logoUrl={myCubeLogo}
+                animationSpeed={cubeSpeed}
                 className="h-48 md:h-64"
               />
             </div>
@@ -675,6 +699,7 @@ function GhostRaceContent() {
                 moves={ghostMoves}
                 faceColors={race.ghostCubeColors}
                 logoUrl={race.ghostCubeLogo}
+                animationSpeed={cubeSpeed}
                 className="h-48 md:h-64"
               />
             </div>

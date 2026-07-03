@@ -179,7 +179,7 @@ export default function HomePage() {
   }, []);
 
   const primaryCta = user
-    ? { href: '/dashboard', label: 'Enter Arena' }
+    ? { href: '/dashboard', label: 'Play Now' }
     : { href: '/login', label: 'Start Racing' };
 
   return (
@@ -194,11 +194,11 @@ export default function HomePage() {
           <Link href="/leaderboard" className="text-gray-400 hover:text-white text-sm">
             Leaderboard
           </Link>
-          <Link href="/practice" className="text-gray-400 hover:text-white text-sm">
-            Practice
+          <Link href="/zen" className="text-gray-400 hover:text-white text-sm">
+            Zen
           </Link>
           <Link href={primaryCta.href} className="btn btn-primary px-4 py-2 text-sm">
-            {user ? 'Enter Arena' : 'Login'}
+            {user ? 'Play Now' : 'Login'}
           </Link>
         </div>
       </nav>
@@ -218,7 +218,7 @@ export default function HomePage() {
             <Link href={primaryCta.href} className="btn btn-primary text-lg px-7 py-3">
               {primaryCta.label}
             </Link>
-            <Link href="/practice" className="btn btn-secondary text-lg px-7 py-3">
+            <Link href="/zen" className="btn btn-secondary text-lg px-7 py-3">
               Try the cube first
             </Link>
           </div>
@@ -278,7 +278,7 @@ export default function HomePage() {
           </span>
           <div className="flex gap-5">
             <Link href="/leaderboard" className="hover:text-white">Leaderboard</Link>
-            <Link href="/practice" className="hover:text-white">Practice</Link>
+            <Link href="/zen" className="hover:text-white">Zen</Link>
             <Link href="/login" className="hover:text-white">Login</Link>
           </div>
         </div>

@@ -159,6 +159,9 @@ export default function DashboardPage() {
       if (prefs.cubeLogo !== undefined && !cubePrefs.modified && cubePrefs.logo === null) {
         cubePrefs.setLogo(prefs.cubeLogo);
       }
+      if (typeof prefs.animationSpeed === 'number' && !cubePrefs.modified && cubePrefs.speed === 3) {
+        cubePrefs.setSpeed(prefs.animationSpeed);
+      }
     }).catch(() => {});
   }, [accessToken]);
 
@@ -193,8 +196,9 @@ export default function DashboardPage() {
     };
   }, [leaveQueue]);
 
-  // One "Find Race": look for a live human, then fall back to a ghost so there's
-  // always an opponent.
+  // One "Find Race", fully automatic: try a live human first, then an unseen
+  // ghost, then recording your own average — the later pages chain the
+  // fallbacks without any further input.
   const handleFindRace = () => {
     if (phase === 'queuing') {
       clearFallback();
@@ -204,14 +208,24 @@ export default function DashboardPage() {
     setPuzzleSize(selectedSize);
     joinQueue(selectedSize);
     clearFallback();
-    fallbackTimerRef.current = setTimeout(() => {
-      // No human in time → race a ghost. The ghost page seed-falls-back, so this
-      // always lands an opponent.
-      if (useGameStore.getState().phase === 'queuing') {
-        leaveQueue();
-        router.push(`/solo/race?auto=1&size=${selectedSize}`);
+    const scheduleFallback = (ms: number) => {
+      fallbackTimerRef.current = setTimeout(() => {
+        if (useGameStore.getState().phase === 'queuing') {
+          leaveQueue();
+          router.push(`/solo/race?auto=1&size=${selectedSize}`);
+        }
+      }, ms);
+    };
+    // If nobody else is queued there's no point holding the full human wait —
+    // give a short grace for someone to arrive, then move on to a ghost.
+    scheduleFallback(RANKED_HUMAN_WAIT_MS);
+    setTimeout(() => {
+      const g = useGameStore.getState();
+      if (g.phase === 'queuing' && g.queuePosition <= 1) {
+        clearFallback();
+        scheduleFallback(0);
       }
-    }, RANKED_HUMAN_WAIT_MS);
+    }, 4000);
   };
 
   const handleLogout = () => {
@@ -338,7 +352,7 @@ export default function DashboardPage() {
                 primary destination anymore. */}
             <div className="flex gap-3 mt-3">
               <Link
-                href="/practice"
+                href="/zen"
                 className="flex-1 py-3 rounded-lg font-medium text-center bg-gray-700 hover:bg-gray-600 transition-all"
               >
                 Zen Mode

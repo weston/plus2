@@ -217,6 +217,7 @@ export class MatchesService {
     roundNumber: number,
     userId: string,
     clientTimeMs?: number | null, // Client-calculated time (player is authority of their own time)
+    solvedMoveCount?: number | null, // moves up to the one that solved — trailing accidents are trimmed
   ): Promise<{
     timeMs: number;
     roundComplete: boolean;
@@ -239,9 +240,28 @@ export class MatchesService {
       const isPlayer1 = match.player1Id === userId;
       const now = new Date();
 
+      // Trim accidental trailing inputs (keys hit right as the solve ended)
+      // so replays and ghost snapshots end at the true finishing state.
+      const trimMoves = (moves: unknown) => {
+        if (
+          solvedMoveCount == null ||
+          !Array.isArray(moves) ||
+          solvedMoveCount < 0 ||
+          solvedMoveCount >= moves.length
+        ) {
+          return null;
+        }
+        return moves.slice(0, solvedMoveCount);
+      };
+
       if (isPlayer1) {
         solve.p1Status = 'completed';
         solve.p1SolveEndAt = now;
+        const trimmed = trimMoves(solve.p1Moves);
+        if (trimmed) {
+          solve.p1Moves = trimmed as typeof solve.p1Moves;
+          solve.p1MoveCount = trimmed.filter((m: { move: string }) => !/^[xyz]/.test(m.move)).length;
+        }
         // Use client-calculated time if provided, otherwise fall back to server calculation
         solve.p1TimeMs = clientTimeMs != null
           ? clientTimeMs
@@ -249,6 +269,11 @@ export class MatchesService {
       } else {
         solve.p2Status = 'completed';
         solve.p2SolveEndAt = now;
+        const trimmed2 = trimMoves(solve.p2Moves);
+        if (trimmed2) {
+          solve.p2Moves = trimmed2 as typeof solve.p2Moves;
+          solve.p2MoveCount = trimmed2.filter((m: { move: string }) => !/^[xyz]/.test(m.move)).length;
+        }
         // Use client-calculated time if provided, otherwise fall back to server calculation
         solve.p2TimeMs = clientTimeMs != null
           ? clientTimeMs

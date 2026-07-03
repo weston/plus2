@@ -268,14 +268,8 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
     }
   });
 
-  socket.on('opponent_done', (data: ServerEvents['opponent_done']) => {
-    const game = useGameStore.getState();
-    // Log final time for sync debugging
-    const opponentDisplayedFinalMs = game.opponentLocalSolveStartPerf !== null
-      ? performance.now() - game.opponentLocalSolveStartPerf
-      : null;
-    console.log(`[SYNC] Opponent done: solveId=${game.solveId}, opponentFinalMs=${data.timeMs}, opponentDisplayedFinalMs=${opponentDisplayedFinalMs?.toFixed(0)}`);
-    game.setOpponentDone(data.timeMs);
+  socket.on('opponent_done', (data: { solveId?: string; timeMs: number | null; moveCount?: number | null }) => {
+    useGameStore.getState().setOpponentDone(data.timeMs, data.moveCount ?? null);
   });
 
   // Receive authoritative time for my own solve (so both players see the same
@@ -438,9 +432,9 @@ export function useSocket() {
     });
   }, []);
 
-  const sendSolveComplete = useCallback((timeMs: number | null) => {
+  const sendSolveComplete = useCallback((timeMs: number | null, solvedMoveCount?: number) => {
     // Send the already-calculated time - server will pass it through to both players
-    ensureSocket()?.emit('solve_complete', { timeMs });
+    ensureSocket()?.emit('solve_complete', { timeMs, solvedMoveCount });
   }, []);
 
   const sendRematch = useCallback(() => {

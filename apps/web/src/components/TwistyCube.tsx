@@ -6,6 +6,10 @@ import type { PuzzleSize } from '@plus2/shared';
 export interface TwistyCubeHandle {
   checkSolved: () => Promise<boolean>;
   applyMove: (move: string) => void;
+  // How many user moves (prop/imperative, scramble excluded) had committed
+  // when the cube most recently became solved — null if never solved.
+  // Lets pages trim accidental trailing inputs typed right as a solve ends.
+  getSolvedMoveCount: () => number | null;
 }
 
 interface TwistyCubeProps {
@@ -34,6 +38,8 @@ interface CstimerCube {
   resize: () => void;
   reset: () => void;
   setLogo?: (url: string | null) => void;
+  getCommitted?: () => number;
+  getSolvedAt?: () => number;
   setSpeed: (v: number) => void;
   _ro?: ResizeObserver;
 }
@@ -125,6 +131,9 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
   const containerRef = useRef<HTMLDivElement>(null);
   const cubeRef = useRef<CstimerCube | null>(null);
   const appliedRef = useRef(0);
+  // Committed-move count at the end of build (scramble replay etc.) — the
+  // zero point for user-relative move counting.
+  const commitBaseRef = useRef(0);
   const speedRef = useRef(animationSpeed);
   const onSolvedRef = useRef(onSolved);
   onSolvedRef.current = onSolved;
@@ -174,6 +183,7 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
         if (scramble) cube.applySeq(scramble, false);
         for (const m of moves) cube.applyMove(m, false);
         appliedRef.current = moves.length;
+        commitBaseRef.current = (cube.getCommitted?.() ?? 0) - moves.length;
 
         cube.resize();
         const ro = new ResizeObserver(() => cube.resize());
@@ -205,6 +215,7 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
       if (scramble) cube.applySeq(scramble, false);
       for (let i = 0; i < moves.length; i++) cube.applyMove(moves[i], false);
       appliedRef.current = moves.length;
+      commitBaseRef.current = (cube.getCommitted?.() ?? 0) - moves.length;
     } else if (moves.length > appliedRef.current) {
       // New moves to play forward (interactive cubes already advanced via applyMove).
       for (let i = appliedRef.current; i < moves.length; i++) cube.applyMove(moves[i], true);
@@ -217,6 +228,14 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
     ref,
     () => ({
       checkSolved: async () => (cubeRef.current ? cubeRef.current.isSolved() : false),
+      getSolvedMoveCount: () => {
+        const cube = cubeRef.current;
+        if (!cube?.getSolvedAt) return null;
+        const solvedAt = cube.getSolvedAt();
+        if (solvedAt < 0) return null;
+        const n = solvedAt - commitBaseRef.current;
+        return n >= 0 ? n : null;
+      },
       applyMove: (move: string) => {
         const cube = cubeRef.current;
         if (!cube) return;

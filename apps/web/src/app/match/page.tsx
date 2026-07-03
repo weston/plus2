@@ -114,6 +114,7 @@ export default function MatchPage() {
   const matchMessages = useChatStore((s) => s.matchMessages);
   const myCubeColors = useCubePrefs((s) => s.colors);
   const myCubeLogo = useCubePrefs((s) => s.logo);
+  const cubeSpeed = useCubePrefs((s) => s.speed);
   const [chatDraft, setChatDraft] = useState('');
   const chatListRef = useRef<HTMLDivElement>(null);
 
@@ -279,9 +280,21 @@ export default function MatchPage() {
     setIsSolved(cubeSolved);
     setMyTimerRunning(false);
 
+    // Accidental keypresses right as the solve ends register extra moves —
+    // trim so my cube, the opponent's view of it, and the stored replay all
+    // end at the true finishing state.
+    let solvedMoveCount: number | undefined;
+    if (cubeSolved) {
+      const n = cubeRef.current?.getSolvedMoveCount();
+      if (typeof n === 'number') {
+        solvedMoveCount = n;
+        useGameStore.getState().trimMyMoves(n);
+      }
+    }
+
     // Don't set myTime locally - wait for server to send it back so both
     // players see the exact same value.
-    sendSolveComplete(cubeSolved ? solveTime : null);
+    sendSolveComplete(cubeSolved ? solveTime : null, solvedMoveCount);
   }, [phase, myTimerRunning, isSolved, myTimerStart, sendSolveComplete]);
 
   // Spacebar also completes the solve — but never while typing in the chat
@@ -382,6 +395,7 @@ export default function MatchPage() {
               isInteractive
               faceColors={myCubeColors}
               logoUrl={myCubeLogo}
+              animationSpeed={cubeSpeed}
               className="h-64 mb-4"
             />
 
@@ -433,6 +447,7 @@ export default function MatchPage() {
               moves={opponentMoves}
               faceColors={opponent.cubeColors}
               logoUrl={opponent.cubeLogo}
+              animationSpeed={cubeSpeed}
               className="h-64 mb-4"
             />
 
