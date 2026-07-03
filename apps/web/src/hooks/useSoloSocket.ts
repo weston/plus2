@@ -33,6 +33,9 @@ export interface SoloState {
   lastSolveTime: number | null;
   solves: SolveResult[];
   averageTime: number | null;
+  // True while the socket is dropped mid-session so the page can show a
+  // "reconnecting" state instead of hanging on 'solving' forever.
+  connectionLost: boolean;
 }
 
 const initialState: SoloState = {
@@ -47,28 +50,44 @@ const initialState: SoloState = {
   lastSolveTime: null,
   solves: [],
   averageTime: null,
+  connectionLost: false,
 };
 
 export function useSoloSocket() {
   const socketRef = useRef<Socket | null>(null);
-  const { accessToken } = useAuthStore();
+  // Key the connect effect on whether we're authed at all — NOT on the token
+  // string. A mid-session token refresh keeps us authed, so the live socket
+  // must survive it; tearing it down would make the server record an abandon.
+  const isAuthed = useAuthStore((s) => !!s.accessToken);
 
   const [state, setState] = useState<SoloState>(initialState);
 
   // Connect socket
   useEffect(() => {
-    if (!accessToken) return;
+    if (!isAuthed) return;
 
     const socket = io(`${SOCKET_URL}/game`, {
-      auth: { token: accessToken },
+      // Read the current token on every (re)connect so a refresh mid-session
+      // reconnects with the fresh token, not the stale creation-time one.
+      auth: (cb) => cb({ token: useAuthStore.getState().accessToken }),
       transports: ['websocket'],
     });
 
     socketRef.current = socket;
 
-    socket.on('connect', () => {});
+    socket.on('connect', () => {
+      // Back online — let the page drop any "reconnecting" UI.
+      setState((prev) => (prev.connectionLost ? { ...prev, connectionLost: false } : prev));
+    });
 
-    socket.on('disconnect', () => {});
+    socket.on('disconnect', (reason) => {
+      // Our own teardown (unmount / manual disconnect) — nothing to surface.
+      if (reason === 'io client disconnect') return;
+      // Surface a recoverable dropped-session state; socket.io auto-reconnects
+      // transient blips, and a server-initiated close is kicked below.
+      setState((prev) => (prev.connectionLost ? prev : { ...prev, connectionLost: true }));
+      if (reason === 'io server disconnect') socket.connect();
+    });
 
     socket.on('error', (data: { code: string; message: string }) => {
       console.error('Solo socket error:', data);
@@ -159,7 +178,7 @@ export function useSoloSocket() {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [accessToken]);
+  }, [isAuthed]);
 
   // Actions
   const startSolo = useCallback((size: PuzzleSize) => {

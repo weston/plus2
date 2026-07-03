@@ -13,6 +13,7 @@ import {
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { AuthRateLimitGuard } from './rate-limit.guard';
 import { RegisterDto, LoginDto, RefreshTokenDto } from './auth.dto';
 
 type Provider = 'google' | 'wca';
@@ -22,25 +23,30 @@ export class AuthController {
   constructor(private authService: AuthService) {}
 
   @Post('register')
+  @UseGuards(AuthRateLimitGuard)
   async register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthRateLimitGuard)
   async login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
   }
 
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthRateLimitGuard)
   async refresh(@Body() dto: RefreshTokenDto) {
     return this.authService.refreshToken(dto.refreshToken);
   }
 
   @Post('logout')
   @HttpCode(HttpStatus.OK)
-  async logout() {
+  @UseGuards(JwtAuthGuard)
+  async logout(@Req() req: { user: { id: string } }) {
+    await this.authService.logout(req.user.id);
     return { message: 'Logged out successfully' };
   }
 
@@ -91,12 +97,19 @@ export class AuthController {
     return `${base}?${params.toString()}`;
   }
 
-  // Exchange the auth code for a normalized identity { oauthId, email, name, wcaId }.
+  // Exchange the auth code for a normalized identity
+  // { oauthId, email, emailVerified, name, wcaId }.
   private async fetchIdentity(
     provider: Provider,
     code: string,
     cfg: { clientId: string; clientSecret: string; callbackUrl: string },
-  ): Promise<{ oauthId: string; email: string; name?: string; wcaId?: string | null }> {
+  ): Promise<{
+    oauthId: string;
+    email: string;
+    emailVerified: boolean;
+    name?: string;
+    wcaId?: string | null;
+  }> {
     const tokenUrl =
       provider === 'google'
         ? 'https://oauth2.googleapis.com/token'
@@ -119,9 +132,17 @@ export class AuthController {
       const infoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
         headers: { Authorization: `Bearer ${tokenData.access_token}` },
       });
-      const p = (await infoRes.json()) as { sub?: string; email?: string; name?: string };
+      const p = (await infoRes.json()) as {
+        sub?: string;
+        email?: string;
+        email_verified?: boolean | string;
+        name?: string;
+      };
       if (!p.sub || !p.email) throw new Error('Incomplete Google profile');
-      return { oauthId: p.sub, email: p.email, name: p.name };
+      // Google returns email_verified as a boolean (occasionally the string
+      // "true"); only a true value counts as verified.
+      const emailVerified = p.email_verified === true || p.email_verified === 'true';
+      return { oauthId: p.sub, email: p.email, emailVerified, name: p.name };
     } else {
       const meRes = await fetch('https://www.worldcubeassociation.org/api/v0/me', {
         headers: { Authorization: `Bearer ${tokenData.access_token}` },
@@ -131,7 +152,14 @@ export class AuthController {
       };
       const p = me.me;
       if (!p?.email) throw new Error('Incomplete WCA profile');
-      return { oauthId: String(p.id), email: p.email, name: p.name, wcaId: p.wca_id };
+      // WCA verifies member emails, so treat the WCA-supplied email as verified.
+      return {
+        oauthId: String(p.id),
+        email: p.email,
+        emailVerified: true,
+        name: p.name,
+        wcaId: p.wca_id,
+      };
     }
   }
 
@@ -140,7 +168,13 @@ export class AuthController {
   private async finishOauth(
     res: Response,
     provider: Provider,
-    identity: { oauthId: string; email: string; name?: string; wcaId?: string | null },
+    identity: {
+      oauthId: string;
+      email: string;
+      emailVerified: boolean;
+      name?: string;
+      wcaId?: string | null;
+    },
     state: string | undefined,
   ) {
     const webUrl = process.env.WEB_URL || 'http://localhost:3000';
@@ -159,7 +193,13 @@ export class AuthController {
         }
         return;
       }
-      // invalid/expired token -> fall through to a normal sign-in
+    }
+    // Sign-in flow: the callback MUST carry the signed sign-in `state` we minted
+    // when starting the redirect. A missing/invalid state means the callback
+    // didn't originate from our initiation endpoint (CSRF) — refuse it.
+    if (!state || !this.authService.verifySignInState(state)) {
+      res.redirect(`${webUrl}/login?error=${provider}`);
+      return;
     }
     const result = await this.authService.oauthLogin({ provider, ...identity });
     const q = new URLSearchParams({
@@ -173,7 +213,10 @@ export class AuthController {
   googleAuth(@Query('state') state: string, @Res() res: Response) {
     const cfg = this.oauthConfig('google');
     if (!cfg) return res.status(503).json({ message: 'Google sign-in is not configured.' });
-    res.redirect(this.authorizeUrl('google', cfg, state));
+    // Link flow passes its own `state` (a link token); a plain sign-in gets a
+    // freshly minted signed state so the callback can validate it (CSRF).
+    const oauthState = state || this.authService.mintSignInState();
+    res.redirect(this.authorizeUrl('google', cfg, oauthState));
   }
 
   @Get('google/callback')
@@ -197,7 +240,10 @@ export class AuthController {
   wcaAuth(@Query('state') state: string, @Res() res: Response) {
     const cfg = this.oauthConfig('wca');
     if (!cfg) return res.status(503).json({ message: 'WCA sign-in is not configured.' });
-    res.redirect(this.authorizeUrl('wca', cfg, state));
+    // Link flow passes its own `state` (a link token); a plain sign-in gets a
+    // freshly minted signed state so the callback can validate it (CSRF).
+    const oauthState = state || this.authService.mintSignInState();
+    res.redirect(this.authorizeUrl('wca', cfg, oauthState));
   }
 
   @Get('wca/callback')

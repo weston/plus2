@@ -6,6 +6,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
+import { AuthRateLimitGuard } from './rate-limit.guard';
 import { User } from '../users/user.entity';
 import { UserPuzzleStats } from '../users/user-puzzle-stats.entity';
 import { KeybindingProfile } from '../keybindings/keybinding-profile.entity';
@@ -27,7 +28,7 @@ import { KeybindingProfile } from '../keybindings/keybinding-profile.entity';
     TypeOrmModule.forFeature([User, UserPuzzleStats, KeybindingProfile]),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
+  providers: [AuthService, JwtStrategy, AuthRateLimitGuard],
   exports: [AuthService, JwtStrategy, PassportModule],
 })
 export class AuthModule {}

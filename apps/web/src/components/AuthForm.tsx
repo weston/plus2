@@ -23,6 +23,15 @@ export function AuthForm({ mode }: AuthFormProps) {
     const at = params.get('accessToken');
     const rt = params.get('refreshToken');
     if (at && rt) {
+      // Strip the tokens from the URL right away so the 14-day refresh token
+      // doesn't linger in browser history or the address bar. Preserve any
+      // other query params and the hash.
+      params.delete('accessToken');
+      params.delete('refreshToken');
+      const qs = params.toString();
+      const cleanUrl = window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash;
+      window.history.replaceState(null, '', cleanUrl);
+
       usersApi
         .getMe(at)
         .then((p) => {

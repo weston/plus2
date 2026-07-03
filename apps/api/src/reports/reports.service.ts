@@ -6,6 +6,7 @@ import { Report, ReportStatus } from './report.entity';
 import { User } from '../users/user.entity';
 import { Match } from '../matches/match.entity';
 import { SoloSession } from '../solo/solo-session.entity';
+import { GhostRace } from '../solo/ghost-race.entity';
 
 @Injectable()
 export class ReportsService {
@@ -48,6 +49,14 @@ export class ReportsService {
       if (!session) throw new BadRequestException('Ghost session not found');
       if (session.userId !== data.reportedUserId) {
         throw new BadRequestException('Session does not belong to the reported player');
+      }
+      // Mirror the match branch: the reporter must actually have raced this
+      // ghost, not merely reference a session that belongs to the reported user.
+      const raced = await this.sessionRepository.manager.count(GhostRace, {
+        where: { racerId: reporterId, ghostSessionId: data.ghostSessionId },
+      });
+      if (raced === 0) {
+        throw new BadRequestException('You can only report ghosts you raced against');
       }
     } else {
       throw new BadRequestException('Invalid context');

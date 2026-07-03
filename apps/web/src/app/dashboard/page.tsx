@@ -210,7 +210,12 @@ export default function DashboardPage() {
     clearFallback();
     const scheduleFallback = (ms: number) => {
       fallbackTimerRef.current = setTimeout(() => {
-        if (useGameStore.getState().phase === 'queuing') {
+        // A matchmaking tick in this window can create a live PvP match. Re-read
+        // the store right before navigating: only fall back to a ghost race if
+        // we're STILL queuing with no match — otherwise we'd leave the user in a
+        // live match AND a ghost race (a silent forfeit). Let the match proceed.
+        const g = useGameStore.getState();
+        if (g.phase === 'queuing' && !g.matchId) {
           leaveQueue();
           router.push(`/solo/race?auto=1&size=${selectedSize}`);
         }

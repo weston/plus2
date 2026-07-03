@@ -65,23 +65,26 @@ function formatTime(ms: number): string {
   return `${seconds}.${centiseconds.toString().padStart(2, '0')}`;
 }
 
-function calculateAo5(times: SolveTime[]): number | null {
+// Returns the average ms, 'DNF' when there are enough solves but ≥2 DNFs among
+// the counted window (a genuine DNF average), or null when there simply aren't
+// enough solves yet — so the display can tell "DNF" apart from "-".
+function calculateAo5(times: SolveTime[]): number | 'DNF' | null {
   if (times.length < 5) return null;
   const last5 = times.slice(-5).map(t => t.dnf ? Infinity : t.time);
   last5.sort((a, b) => a - b);
   // Remove best and worst
   const middle3 = last5.slice(1, 4);
-  if (middle3.some(t => t === Infinity)) return null;
+  if (middle3.some(t => t === Infinity)) return 'DNF';
   return Math.round(middle3.reduce((a, b) => a + b, 0) / 3);
 }
 
-function calculateAo12(times: SolveTime[]): number | null {
+function calculateAo12(times: SolveTime[]): number | 'DNF' | null {
   if (times.length < 12) return null;
   const last12 = times.slice(-12).map(t => t.dnf ? Infinity : t.time);
   last12.sort((a, b) => a - b);
   // Remove best and worst
   const middle10 = last12.slice(1, 11);
-  if (middle10.some(t => t === Infinity)) return null;
+  if (middle10.some(t => t === Infinity)) return 'DNF';
   return Math.round(middle10.reduce((a, b) => a + b, 0) / 10);
 }
 
@@ -154,6 +157,10 @@ export default function ZenPage() {
   // Start inspection - scrambles the cube and shows it
   const startInspection = useCallback(() => {
     if (phaseRef.current !== 'idle') return;
+    // Clear any leftover moves so the cube rebuilds to exactly the displayed
+    // scramble (a cancelled prior attempt could leave the cube half-solved).
+    setMoves([]);
+    moveSeqRef.current = 0;
     setAppliedScramble(scramble); // Apply scramble to cube now
     setPhase('inspecting');
     phaseRef.current = 'inspecting';
@@ -278,6 +285,10 @@ export default function ZenPage() {
         return;
       }
 
+      // Holding a key auto-repeats: without this, keeping Space held after a
+      // solve would fire the 'done' branch repeatedly and skip the result view.
+      if (e.repeat) return;
+
       const currentPhase = phaseRef.current;
 
       if (e.code === 'Space') {
@@ -314,7 +325,15 @@ export default function ZenPage() {
           // Cancel current solve
           if (inspectionTimerRef.current) {
             clearTimeout(inspectionTimerRef.current);
+            inspectionTimerRef.current = null;
           }
+          // Restore a clean, solved cube for idle. Previously moves and
+          // appliedScramble lingered, so the next attempt started from a
+          // half-solved cube that didn't match the displayed scramble.
+          setMoves([]);
+          moveSeqRef.current = 0;
+          setAppliedScramble('');
+          setSolveTime(null);
           setPhase('idle');
           phaseRef.current = 'idle';
           setInspectionStart(null);
@@ -510,13 +529,13 @@ export default function ZenPage() {
                 <div>
                   <span className="text-gray-400">Ao5</span>
                   <p className="text-xl font-bold">
-                    {ao5 ? formatTime(ao5) : '-'}
+                    {ao5 === null ? '-' : ao5 === 'DNF' ? 'DNF' : formatTime(ao5)}
                   </p>
                 </div>
                 <div>
                   <span className="text-gray-400">Ao12</span>
                   <p className="text-xl font-bold">
-                    {ao12 ? formatTime(ao12) : '-'}
+                    {ao12 === null ? '-' : ao12 === 'DNF' ? 'DNF' : formatTime(ao12)}
                   </p>
                 </div>
               </div>

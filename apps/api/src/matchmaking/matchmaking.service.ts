@@ -145,19 +145,25 @@ export class MatchmakingService {
     // Sort by join time (FIFO priority)
     entries.sort((a, b) => a.joinedAt - b.joinedAt);
 
-    // Find best match for the first player
-    const player1 = entries[0];
+    // Scan in FIFO order and pair the first two mutually-compatible entries.
+    // Seeding only from entries[0] head-of-line blocks: if the oldest waiter is
+    // out of MMR range of everyone, mutually-compatible players behind them
+    // would never pair this tick. We still form only one pairing per call and
+    // prefer the oldest possible pair.
+    for (let i = 0; i < entries.length; i++) {
+      const player1 = entries[i];
 
-    for (let i = 1; i < entries.length; i++) {
-      const player2 = entries[i];
-      const mmrDiff = Math.abs(player1.mmr - player2.mmr);
+      for (let j = i + 1; j < entries.length; j++) {
+        const player2 = entries[j];
+        const mmrDiff = Math.abs(player1.mmr - player2.mmr);
 
-      // Check if within both players' search ranges
-      if (mmrDiff <= player1.searchRange && mmrDiff <= player2.searchRange) {
-        // Remove both from queue
-        queue.delete(player1.userId);
-        queue.delete(player2.userId);
-        return [player1, player2];
+        // Check if within both players' search ranges
+        if (mmrDiff <= player1.searchRange && mmrDiff <= player2.searchRange) {
+          // Remove both from queue
+          queue.delete(player1.userId);
+          queue.delete(player2.userId);
+          return [player1, player2];
+        }
       }
     }
 

@@ -7,6 +7,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { randomUUID } from 'crypto';
 import * as bcrypt from 'bcrypt';
 import { User } from '../users/user.entity';
 import { UserPuzzleStats } from '../users/user-puzzle-stats.entity';
@@ -150,10 +151,24 @@ export class AuthService {
         throw new UnauthorizedException('User not found');
       }
 
+      // Reject refresh tokens minted before the last logout: logout bumps the
+      // user's tokenVersion, so any token carrying an older `tv` is revoked.
+      if ((payload.tv ?? 0) !== (user.tokenVersion ?? 0)) {
+        throw new UnauthorizedException('Refresh token revoked');
+      }
+
       return this.generateTokens(user);
     } catch {
       throw new UnauthorizedException('Invalid refresh token');
     }
+  }
+
+  /**
+   * Server-side logout: bump the user's tokenVersion so every outstanding
+   * refresh token (which embeds the old `tv`) is rejected on next refresh.
+   */
+  async logout(userId: string): Promise<void> {
+    await this.userRepository.increment({ id: userId }, 'tokenVersion', 1);
   }
 
   async validateUser(payload: JwtPayload): Promise<User | null> {
@@ -179,11 +194,16 @@ export class AuthService {
   /**
    * Find-or-create a user from an OAuth provider profile, then issue tokens.
    * Resolves by the provider-specific id, else by email (auto-link), else creates.
+   *
+   * Auto-linking by email is only safe when the provider has VERIFIED the email —
+   * otherwise anyone could set an unverified address at the provider to hijack an
+   * existing account. WCA verifies emails; Google supplies `email_verified`.
    */
   async oauthLogin(params: {
     provider: string;
     oauthId: string;
     email: string;
+    emailVerified: boolean;
     name?: string;
     wcaId?: string | null;
   }) {
@@ -195,10 +215,19 @@ export class AuthService {
       where: { [idField]: params.oauthId } as any,
     });
 
-    // 2. Existing account with the same email — auto-link this provider to it
+    // 2. Existing account with the same email — auto-link this provider to it,
+    //    but ONLY when the provider verified the incoming email. If it isn't
+    //    verified we must not take over the account: email is unique so we can't
+    //    create a distinct one either, so surface a clear error instead.
     if (!user) {
-      user = await this.userRepository.findOne({ where: { email } });
-      if (user) {
+      const existingByEmail = await this.userRepository.findOne({ where: { email } });
+      if (existingByEmail) {
+        if (!params.emailVerified) {
+          throw new ConflictException(
+            'An account with this email already exists. Sign in to it and link this provider from settings.',
+          );
+        }
+        user = existingByEmail;
         this.applyIdentity(user, params);
         await this.userRepository.save(user);
       }
@@ -283,6 +312,26 @@ export class AuthService {
     return null;
   }
 
+  /**
+   * Short-lived signed `state` for an OAuth SIGN-IN round-trip. Carries a nonce
+   * and a purpose so the callback can prove the request originated here (CSRF).
+   */
+  mintSignInState(): string {
+    return this.jwtService.sign(
+      { purpose: 'oauth_signin', nonce: randomUUID() },
+      { expiresIn: '10m' },
+    );
+  }
+
+  verifySignInState(token: string): boolean {
+    try {
+      const payload = this.jwtService.verify(token) as { purpose?: string };
+      return payload?.purpose === 'oauth_signin';
+    } catch {
+      return false;
+    }
+  }
+
   private async generateUniqueUsername(base: string): Promise<string> {
     let clean = base.replace(/[^a-zA-Z0-9_]/g, '').slice(0, 24) || 'cuber';
     if (clean.length < 3) clean = `${clean}cuber`;
@@ -309,10 +358,15 @@ export class AuthService {
     };
 
     const accessToken = this.jwtService.sign(payload);
-    const refreshToken = this.jwtService.sign(payload, {
-      secret: process.env.JWT_REFRESH_SECRET || 'plus2-refresh-secret',
-      expiresIn: '14d',
-    });
+    // The refresh token also carries the user's tokenVersion (`tv`) so logout can
+    // revoke it (see refreshToken / logout). Access tokens are unaffected.
+    const refreshToken = this.jwtService.sign(
+      { ...payload, tv: user.tokenVersion ?? 0 },
+      {
+        secret: process.env.JWT_REFRESH_SECRET || 'plus2-refresh-secret',
+        expiresIn: '14d',
+      },
+    );
 
     return { accessToken, refreshToken };
   }

@@ -10,6 +10,17 @@ export interface TwistyCubeHandle {
   // when the cube most recently became solved — null if never solved.
   // Lets pages trim accidental trailing inputs typed right as a solve ends.
   getSolvedMoveCount: () => number | null;
+  // Date.now() when the most recent user move was INPUT (not when its
+  // animation committed). Lets a solve stop the clock at move-start so the
+  // recorded time excludes the final cosmetic animation. null if no move yet.
+  getLastMoveInputAt: () => number | null;
+  // True while a move is still animating (input but not yet committed) — the
+  // logical cube only reflects a move at animation end, so a solved-check made
+  // while a final move is in flight is briefly false.
+  hasPendingMoves: () => boolean;
+  // Resolve once all in-flight moves have committed (or after a safety
+  // timeout), so callers can re-check solved state instead of scoring a DNF.
+  settle: (timeoutMs?: number) => Promise<void>;
 }
 
 interface TwistyCubeProps {
@@ -137,6 +148,14 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
   // Committed-move count at the end of build (scramble replay etc.) — the
   // zero point for user-relative move counting.
   const commitBaseRef = useRef(0);
+  // Date.now() of the most recent imperative (user) move input — the clock
+  // stops here, not at animation commit, so the recorded time doesn't include
+  // the final move's cosmetic animation (which varies with animationSpeed).
+  const lastMoveInputAtRef = useRef<number | null>(null);
+  // Always-current `moves` prop, so the async build can catch up on moves that
+  // arrived while the renderer scripts were still loading.
+  const movesRef = useRef<string[]>(moves);
+  movesRef.current = moves;
   const speedRef = useRef(animationSpeed);
   const onSolvedRef = useRef(onSolved);
   onSolvedRef.current = onSolved;
@@ -233,9 +252,25 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
 
         appliedRef.current = 0;
         if (scramble) cube.applySeq(scramble, false);
-        for (const m of moves) cube.applyMove(m, false);
-        appliedRef.current = moves.length;
-        commitBaseRef.current = (cube.getCommitted?.() ?? 0) - moves.length;
+        const built = moves;
+        for (const m of built) cube.applyMove(m, false);
+        appliedRef.current = built.length;
+        commitBaseRef.current = (cube.getCommitted?.() ?? 0) - built.length;
+
+        // Moves that arrived while the renderer scripts were loading aren't in
+        // `built` (the moves effect no-ops while cubeRef is null) — reconcile
+        // against the latest prop so those inputs aren't silently dropped.
+        const latest = movesRef.current;
+        if (latest.length < appliedRef.current) {
+          cube.reset();
+          if (scramble) cube.applySeq(scramble, false);
+          for (let i = 0; i < latest.length; i++) cube.applyMove(latest[i], false);
+          appliedRef.current = latest.length;
+          commitBaseRef.current = (cube.getCommitted?.() ?? 0) - latest.length;
+        } else if (latest.length > appliedRef.current) {
+          for (let i = appliedRef.current; i < latest.length; i++) cube.applyMove(latest[i], false);
+          appliedRef.current = latest.length;
+        }
 
         cube.resize();
         const ro = new ResizeObserver(() => cube.resize());
@@ -288,9 +323,27 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
         const n = solvedAt - commitBaseRef.current;
         return n >= 0 ? n : null;
       },
+      getLastMoveInputAt: () => lastMoveInputAtRef.current,
+      hasPendingMoves: () => {
+        const cube = cubeRef.current;
+        if (!cube?.getCommitted) return false;
+        // Total moves handed to the renderer (scramble base + user moves) vs
+        // how many have committed. A positive delta means a move is animating.
+        return commitBaseRef.current + appliedRef.current > cube.getCommitted();
+      },
+      settle: async (timeoutMs = 700) => {
+        const cube = cubeRef.current;
+        if (!cube?.getCommitted) return;
+        const start = performance.now();
+        while (commitBaseRef.current + appliedRef.current > cube.getCommitted()) {
+          if (performance.now() - start > timeoutMs) break;
+          await new Promise((r) => setTimeout(r, 16));
+        }
+      },
       applyMove: (move: string) => {
         const cube = cubeRef.current;
         if (!cube) return;
+        lastMoveInputAtRef.current = Date.now(); // stop-clock anchor (move-start)
         appliedRef.current += 1; // keep the moves effect from replaying this move
         cube.applyMove(move, true);
       },

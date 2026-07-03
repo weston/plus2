@@ -55,6 +55,9 @@ export interface GhostRaceState {
   // No unseen ghosts near the player's rating: the ranked hierarchy says
   // record your own ao5 instead (the page routes there).
   noGhosts: boolean;
+  // True while the socket is dropped mid-race so the page can show a
+  // "reconnecting" state instead of hanging on 'solving' forever.
+  connectionLost: boolean;
 }
 
 const initialState: GhostRaceState = {
@@ -92,28 +95,46 @@ const initialState: GhostRaceState = {
   newLeague: null,
   error: null,
   noGhosts: false,
+  connectionLost: false,
 };
 
 export function useGhostRaceSocket() {
   const socketRef = useRef<Socket | null>(null);
-  const { accessToken, updateUser } = useAuthStore();
+  // Key the connect effect on whether we're authed at all — NOT on the token
+  // string. A mid-session token refresh keeps us authed, so the live socket
+  // must survive it; tearing it down would make the server record an abandon
+  // (a ranked ghost-race loss).
+  const isAuthed = useAuthStore((s) => !!s.accessToken);
+  const updateUser = useAuthStore((s) => s.updateUser);
 
   const [state, setState] = useState<GhostRaceState>(initialState);
 
   // Connect socket
   useEffect(() => {
-    if (!accessToken) return;
+    if (!isAuthed) return;
 
     const socket = io(`${SOCKET_URL}/game`, {
-      auth: { token: accessToken },
+      // Read the current token on every (re)connect so a refresh mid-session
+      // reconnects with the fresh token, not the stale creation-time one.
+      auth: (cb) => cb({ token: useAuthStore.getState().accessToken }),
       transports: ['websocket'],
     });
 
     socketRef.current = socket;
 
-    socket.on('connect', () => {});
+    socket.on('connect', () => {
+      // Back online — let the page drop any "reconnecting" UI.
+      setState((prev) => (prev.connectionLost ? { ...prev, connectionLost: false } : prev));
+    });
 
-    socket.on('disconnect', () => {});
+    socket.on('disconnect', (reason) => {
+      // Our own teardown (unmount / manual disconnect) — nothing to surface.
+      if (reason === 'io client disconnect') return;
+      // Surface a recoverable dropped-session state; socket.io auto-reconnects
+      // transient blips, and a server-initiated close is kicked below.
+      setState((prev) => (prev.connectionLost ? prev : { ...prev, connectionLost: true }));
+      if (reason === 'io server disconnect') socket.connect();
+    });
 
     socket.on('error', (data: { code: string; message: string }) => {
       console.error('Ghost race socket error:', data);
@@ -216,7 +237,12 @@ export function useGhostRaceSocket() {
         lastGhostTime: data.ghostTime,
         lastUserWonRound: data.userWonRound,
         userWins: prev.userWins + (data.userWonRound ? 1 : 0),
-        ghostWins: prev.ghostWins + (!data.userWonRound && data.ghostTime !== null ? 1 : 0),
+        // The ghost only scores on a genuine loss for the user. On a tie
+        // (userTime === ghostTime) the server gives NEITHER side a point, so
+        // exclude equal times — otherwise we'd wrongly credit the ghost.
+        ghostWins:
+          prev.ghostWins +
+          (!data.userWonRound && data.ghostTime !== null && data.userTime !== data.ghostTime ? 1 : 0),
       }));
     });
 
@@ -266,7 +292,7 @@ export function useGhostRaceSocket() {
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [accessToken, updateUser]);
+  }, [isAuthed, updateUser]);
 
   // Actions
   const startRace = useCallback((size: PuzzleSize, opponentId?: string) => {

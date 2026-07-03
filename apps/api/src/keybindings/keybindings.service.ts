@@ -54,14 +54,11 @@ export class KeybindingsService {
       throw new NotFoundException('Profile not found');
     }
 
-    // Validate bindings if provided
-    if (updates.bindings) {
-      const keys = Object.values(updates.bindings);
-      const uniqueKeys = new Set(keys);
-      if (keys.length !== uniqueKeys.size) {
-        throw new BadRequestException('Duplicate key bindings detected');
-      }
-    }
+    // `bindings` is a key -> move map. Multiple keys legitimately map to the
+    // same move (e.g. two keys for one rotation), and keys are unique by object
+    // construction — so there is nothing to reject. The previous check compared
+    // the move VALUES for duplicates and thus rejected every default-derived
+    // profile with "Duplicate key bindings detected".
 
     if (updates.name) profile.name = updates.name;
     if (updates.bindings) profile.bindings = updates.bindings;

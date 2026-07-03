@@ -13,7 +13,7 @@ import {
   forwardRef, Post } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { UsersService } from './users.service';
-import { IsString, MinLength, MaxLength, Matches, IsNumber, IsOptional, IsObject, IsBoolean, Min, Max, Length } from 'class-validator';
+import { IsString, MinLength, MaxLength, Matches, IsNumber, IsOptional, IsObject, Min, Max, Length } from 'class-validator';
 import { MatchesService } from '../matches/matches.service';
 import { SoloService } from '../solo/solo.service';
 import type { PuzzleSize, WcaAchievements } from '@plus2/shared';
@@ -37,10 +37,6 @@ class UpdatePreferencesDto {
   @IsOptional()
   @IsObject()
   cubeColors?: Record<string, string>;
-
-  @IsOptional()
-  @IsBoolean()
-  ghostOptOut?: boolean;
 
   // Imgur URL set via POST /users/me/logo, or null to remove. Validated
   // against i.imgur.com in the service.
@@ -72,8 +68,12 @@ export class UsersController {
 
   @Get('me')
   @UseGuards(JwtAuthGuard)
-  async getMe(@Request() req: { user: { id: string } }) {
-    return this.usersService.getProfile(req.user.id);
+  async getMe(@Request() req: { user: { id: string; isAdmin?: boolean } }) {
+    // isAdmin is exposed only to the authenticated self here, never on the public
+    // getProfile shape (GET /users/:id). req.user is the full (password-stripped)
+    // user loaded by the JWT strategy, so isAdmin is available without a re-query.
+    const profile = await this.usersService.getProfile(req.user.id);
+    return { ...profile, isAdmin: !!req.user.isAdmin };
   }
 
   @Patch('me')
@@ -219,12 +219,19 @@ export class UsersController {
     }
   }
 
+  // Coerce a query `page` into a positive integer (default 1); rejects NaN,
+  // fractions, zero and negatives.
+  private parsePage(page: unknown): number {
+    const n = Math.floor(Number(page));
+    return Number.isFinite(n) && n >= 1 ? n : 1;
+  }
+
   @Get(':id/matches')
   async getUserMatches(
     @Param('id') id: string,
     @Query('page') page = 1,
   ) {
-    return this.matchesService.getUserMatches(id, Number(page), 20);
+    return this.matchesService.getUserMatches(id, this.parsePage(page), 20);
   }
 
   @Get(':id/mmr-history')
@@ -261,9 +268,9 @@ export class UsersController {
     // To produce the correct combined page sorted by date, fetch the top
     // (page * pageSize) most-recent rows from each source — that's guaranteed to
     // contain the combined page's items — then merge, sort, and slice below.
-    const pageNum = Number(page);
+    const pageNum = this.parsePage(page);
     const pageSize = 20;
-    const needed = Math.max(1, pageNum) * pageSize;
+    const needed = pageNum * pageSize;
 
     // Get races where user was the racer
     const { races: asRacer, total: racerTotal } =
@@ -314,7 +321,7 @@ export class UsersController {
     allRaces.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     // Paginate
-    const start = (Math.max(1, pageNum) - 1) * pageSize;
+    const start = (pageNum - 1) * pageSize;
     const paginatedRaces = allRaces.slice(start, start + pageSize);
 
     return {

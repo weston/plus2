@@ -24,7 +24,16 @@ async function refreshAccessToken(): Promise<string | null> {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refreshToken }),
         });
-        if (!res.ok) throw new Error('Refresh failed');
+        if (!res.ok) {
+          // 401 means the refresh token itself is invalid/expired — a real
+          // auth failure, so clear the session. Any other non-OK status (5xx,
+          // etc.) is treated as transient: keep the (still valid) session and
+          // let the caller fail/retry.
+          if (res.status === 401) {
+            useAuthStore.getState().logout();
+          }
+          return null;
+        }
         const data = (await res.json()) as {
           accessToken: string;
           refreshToken: string;
@@ -35,8 +44,8 @@ async function refreshAccessToken(): Promise<string | null> {
         });
         return data.accessToken;
       } catch {
-        // Refresh token is invalid/expired — clear the session.
-        useAuthStore.getState().logout();
+        // Network/fetch threw — the refresh token may well still be valid, so
+        // do NOT log out. Return null and let the caller fail/retry.
         return null;
       } finally {
         refreshPromise = null;

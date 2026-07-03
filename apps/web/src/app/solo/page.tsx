@@ -65,6 +65,18 @@ function SoloContent() {
     }
   }, [user, accessToken, router, _hasHydrated]);
 
+  // Tear down the solve rAF loop on unmount — updateTimer re-schedules itself
+  // every frame, so navigating away mid-solve would otherwise leak a ~60fps
+  // loop per abandoned solve.
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        cancelAnimationFrame(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, []);
+
   // Auto-start a recording session when arriving from the ranked flow
   // (?auto=1): the end of the Find Race hierarchy — no human, no unseen
   // ghost — so the player records an ao5 that becomes a ghost for others.
@@ -240,7 +252,14 @@ function SoloContent() {
   };
 
   const handlePlayAgain = () => {
+    // reset()→idle alone strands the user: with ?auto=1 still in the URL the
+    // idle branch shows the auto "setting up 5 solo solves…" spinner and the
+    // auto-start effect is one-shot (autoStartedRef), so it never re-fires.
+    // Start a fresh recording session directly instead.
+    const size = (searchParams.get('size') as PuzzleSize) || selectedSize;
+    autoStartedRef.current = false;
     solo.reset();
+    solo.startSolo(size);
   };
 
   const handleBackToDashboard = () => {

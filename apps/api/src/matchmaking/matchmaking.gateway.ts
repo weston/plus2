@@ -83,6 +83,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       // timer — only an explicit match_rejoin does.
       player1Left?: boolean;
       player2Left?: boolean;
+      // Set the moment the match is settled (completed or forfeited). The state
+      // lingers ~10s afterwards for rematch/resync; this flag lets those paths
+      // tell "finished" from "live" (don't block queueing, don't resync as live).
+      completed?: boolean;
       // Server-authoritative solve timeline (for deterministic replay)
       inspectionStartServerMs?: number;
       inspectionEndServerMs?: number;
@@ -273,6 +277,11 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         continue;
       }
 
+      // A finished match lingers briefly for rematch/cleanup — never resync it
+      // as a live round (that would show a frozen in-progress screen for a match
+      // that already ended).
+      if (matchState.completed) continue;
+
       const isPlayer1 = matchState.player1Id === socket.userId;
 
       if (!opts.takeover) {
@@ -281,14 +290,19 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         // already attached — only an explicit match_rejoin (the match page
         // mounting) takes over.
         if (this.findOtherAttachedSocket(matchId, socket.userId, socket.id)) {
-          return false;
+          // Another socket already owns THIS match — but the user may also be in
+          // a different live match (e.g. mid A→B transition). Keep scanning
+          // rather than bailing on the whole function.
+          continue;
         }
         // A player who deliberately LEFT the match page stays detached on a
         // bare reconnect (e.g. a network blip while on the dashboard) so the
         // forfeit grace period keeps counting. Returning to the match page
         // (match_rejoin, takeover=true) re-attaches and clears the flag.
+        // `continue` (not `return`): don't let a stale left-match short-circuit
+        // the scan and miss the user's actual live match.
         if (isPlayer1 ? matchState.player1Left : matchState.player2Left) {
-          return false;
+          continue;
         }
       }
 
@@ -538,10 +552,17 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       return;
     }
 
-    // Check if already in a match
+    // Check if already in a LIVE match. A finished match's state lingers ~10s
+    // (for rematch/resync); don't block queueing on it — just clear the stale
+    // reference and let the player queue.
     if (socket.matchId) {
-      socket.emit('error', { code: 'IN_MATCH', message: 'Already in a match' });
-      return;
+      const active = this.activeMatches.get(socket.matchId);
+      if (active && !active.completed) {
+        socket.emit('error', { code: 'IN_MATCH', message: 'Already in a match' });
+        return;
+      }
+      socket.matchId = undefined;
+      socket.playerNumber = undefined;
     }
 
     try {
@@ -779,6 +800,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     const match = this.activeMatches.get(socket.matchId);
     if (!match) return;
+    // Ignore moves before the first round starts (currentRound 0 is the
+    // pre-round setup window) — they'd arm a bogus solve start/timeout with a
+    // solveId of matchId:0.
+    if (match.currentRound === 0) return;
     const serverTs = Date.now();
 
     const isPlayer1 = socket.userId === match.player1Id;
@@ -2417,7 +2442,11 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
             const ms = this.activeMatches.get(matchId)!;
             ms.player1Ready = true;
             ms.player2Ready = true;
-            this.startRound(matchId);
+            // Swallow a transient startRound failure instead of leaving an
+            // unhandled rejection that hangs the round and leaks the entry.
+            void this.startRound(matchId).catch((e) => {
+              console.error(`startRound (auto-ready) failed for ${matchId}:`, e);
+            });
           }
         }, 3000);
       }
@@ -2449,6 +2478,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // Already settled (duplicate completion / forfeit race) — don't re-emit
     // match_end or re-snapshot ghosts. The first invocation did the work.
     if (!result) return;
+    matchState.completed = true;
 
     // Look up sockets dynamically
     const p1Socket = this.findMatchSocket(matchState.player1Id, matchId);
@@ -2471,49 +2501,58 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       newLeague: result.p2NewLeague,
     });
 
-    // Snapshot each player's solves into the ghost pool (grows liquidity;
-    // respects per-user opt-out). Uses post-match MMR as the ghost's rating.
+    // Snapshot each player's solves into the ghost pool (grows liquidity).
+    // Uses post-match MMR as the ghost's rating. Skip a player who DNF'd every
+    // round — an all-null ghost never moves and would hand free MMR to whoever
+    // races it (the race path already guards this; the match path did not).
     if (this.soloService) {
       try {
         const full = await this.matchesService.getMatchWithSolves(matchId);
         const solves = (full.solves || []).slice().sort((a, b) => a.roundNumber - b.roundNumber);
-        await this.soloService.recordGhost(
-          matchState.player1Id,
-          full.puzzleSize,
-          result.p1NewMmr,
-          solves.map((s) => ({
-            roundNumber: s.roundNumber,
-            scramble: s.scramble,
-            timeMs: s.p1TimeMs,
-            moves: (s.p1Moves as any) || [],
-            inspectionStartAt: s.p1InspectionStartAt,
-            solveStartAt: s.p1SolveStartAt,
-          })),
-          full.scrambleSetId,
-        );
-        await this.soloService.recordGhost(
-          matchState.player2Id,
-          full.puzzleSize,
-          result.p2NewMmr,
-          solves.map((s) => ({
-            roundNumber: s.roundNumber,
-            scramble: s.scramble,
-            timeMs: s.p2TimeMs,
-            moves: (s.p2Moves as any) || [],
-            inspectionStartAt: s.p2InspectionStartAt,
-            solveStartAt: s.p2SolveStartAt,
-          })),
-          full.scrambleSetId,
-        );
+        if (solves.some((s) => s.p1TimeMs != null)) {
+          await this.soloService.recordGhost(
+            matchState.player1Id,
+            full.puzzleSize,
+            result.p1NewMmr,
+            solves.map((s) => ({
+              roundNumber: s.roundNumber,
+              scramble: s.scramble,
+              timeMs: s.p1TimeMs,
+              moves: (s.p1Moves as any) || [],
+              inspectionStartAt: s.p1InspectionStartAt,
+              solveStartAt: s.p1SolveStartAt,
+            })),
+            full.scrambleSetId,
+          );
+        }
+        if (solves.some((s) => s.p2TimeMs != null)) {
+          await this.soloService.recordGhost(
+            matchState.player2Id,
+            full.puzzleSize,
+            result.p2NewMmr,
+            solves.map((s) => ({
+              roundNumber: s.roundNumber,
+              scramble: s.scramble,
+              timeMs: s.p2TimeMs,
+              moves: (s.p2Moves as any) || [],
+              inspectionStartAt: s.p2InspectionStartAt,
+              solveStartAt: s.p2SolveStartAt,
+            })),
+            full.scrambleSetId,
+          );
+        }
       } catch (e) {
         console.error('Ghost snapshot error:', e);
       }
     }
 
-    // Clean up match state after delay
+    // Clean up match state after delay. Use the STRICT lookup: only detach a
+    // socket still attached to THIS match. Between match_end and this timer a
+    // player can rematch into a NEW match on the same socket — the fallback
+    // lookup would return that socket and wrongly clear its (new) matchId.
     setTimeout(() => {
-      const p1 = this.findMatchSocket(matchState.player1Id, matchId) as AuthenticatedSocket;
-      const p2 = this.findMatchSocket(matchState.player2Id, matchId) as AuthenticatedSocket;
+      const p1 = this.findAttachedMatchSocket(matchState.player1Id, matchId) as AuthenticatedSocket;
+      const p2 = this.findAttachedMatchSocket(matchState.player2Id, matchId) as AuthenticatedSocket;
       if (p1) p1.matchId = undefined;
       if (p2) p2.matchId = undefined;
       this.activeMatches.delete(matchId);
@@ -2611,10 +2650,14 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       this.activeMatches.delete(matchId);
       return;
     }
+    matchState.completed = true;
 
-    // Notify both players
-    const p1Socket = this.findMatchSocket(matchState.player1Id, matchId);
-    const p2Socket = this.findMatchSocket(matchState.player2Id, matchId);
+    // Notify both players. STRICT lookup: the forfeiting player has usually
+    // already left this match (and may be in a new one) — deliver this match's
+    // final result, and the matchId cleanup below, only to sockets still
+    // attached to THIS match, never a fallback socket bound to a different one.
+    const p1Socket = this.findAttachedMatchSocket(matchState.player1Id, matchId);
+    const p2Socket = this.findAttachedMatchSocket(matchState.player2Id, matchId);
 
     const isPlayer1Forfeiting = forfeitingUserId === matchState.player1Id;
 
@@ -2699,6 +2742,21 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       newest = socket;
     }
     return newest;
+  }
+
+  // Like findMatchSocket but with NO newest-socket fallback: returns a socket
+  // ONLY if it is actually attached to THIS match. Teardown paths (clearing
+  // matchId, delivering a match's FINAL result) must use this — otherwise the
+  // fallback can hand back a socket the user has since bound to a DIFFERENT
+  // match, and we'd detach them from (or mis-deliver into) that live match.
+  private findAttachedMatchSocket(userId: string, matchId: string): Socket | undefined {
+    if (!this.server) return undefined;
+    const socketsMap = this.server.sockets as unknown as Map<string, Socket>;
+    for (const [, socket] of socketsMap) {
+      const s = socket as AuthenticatedSocket;
+      if (s.userId === userId && s.matchId === matchId && socket.connected) return socket;
+    }
+    return undefined;
   }
 
   // A LIVE socket of this user attached to this match, other than the given

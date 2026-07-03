@@ -80,12 +80,15 @@ export class User {
   @Column({ name: 'is_admin', type: 'boolean', default: false })
   isAdmin: boolean;
 
+  // Bumped on logout to revoke all outstanding refresh tokens (the refresh token
+  // embeds this as the `tv` claim).
+  @Column({ name: 'token_version', type: 'int', default: 0 })
+  tokenVersion: number;
+
   @Column({ type: 'json', nullable: true })
   preferences: {
     animationSpeed?: number;
     cubeColors?: Record<string, string>;
-    // When true, the user's solves are NOT saved as ghosts others can race.
-    ghostOptOut?: boolean;
     cubeLogo?: string | null;
   };
 }

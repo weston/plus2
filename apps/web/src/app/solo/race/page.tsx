@@ -72,6 +72,22 @@ function GhostRaceContent() {
     }
   }, [user, accessToken, router, _hasHydrated]);
 
+  // Tear down the solve rAF loop and ghost-replay interval on unmount — the
+  // updateTimer loop re-schedules itself every frame, so abandoning a solve
+  // (navigating away mid-solve) would otherwise leak a ~60fps loop per page.
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        cancelAnimationFrame(timerRef.current);
+        timerRef.current = null;
+      }
+      if (ghostReplayRef.current) {
+        clearInterval(ghostReplayRef.current);
+        ghostReplayRef.current = null;
+      }
+    };
+  }, []);
+
   // Auto-start a ghost race when arriving from the ranked "Find Race" fallback
   // (?auto=1). If there's no unseen ghost near the player's rating either,
   // the hierarchy ends with recording your own ao5 — route there.
@@ -362,7 +378,14 @@ function GhostRaceContent() {
   };
 
   const handlePlayAgain = () => {
+    // reset()→idle alone strands the user: with ?auto=1 still in the URL the
+    // idle branch shows the "Finding you a race…" spinner and the auto-start
+    // effect is one-shot (autoStartedRef), so it never re-fires. Kick off a
+    // fresh race directly instead.
+    const size = (searchParams.get('size') as PuzzleSize) || selectedSize;
+    autoStartedRef.current = false;
     race.reset();
+    race.startRace(size, opponentId || undefined);
   };
 
   const handleBackToDashboard = () => {

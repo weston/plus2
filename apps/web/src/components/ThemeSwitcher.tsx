@@ -18,7 +18,11 @@ export function ThemeSwitcher() {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    const saved = (localStorage.getItem(STORAGE_KEY) as ThemeId) || 'premium';
+    // Validate the stored value against the known theme ids — a corrupt or
+    // legacy value would otherwise be stamped onto data-theme and yield an
+    // unstyled theme. Fall back to the default when it isn't recognized.
+    const stored = localStorage.getItem(STORAGE_KEY);
+    const saved: ThemeId = THEMES.some((t) => t.id === stored) ? (stored as ThemeId) : 'premium';
     setTheme(saved);
     document.documentElement.setAttribute('data-theme', saved);
   }, []);

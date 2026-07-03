@@ -3,6 +3,9 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import type { User, LeagueTier } from '@plus2/shared';
+import { useGameStore } from './game';
+import { useChallengeStore } from './challenge';
+import { useChatStore } from './chatroom';
 
 interface AuthState {
   user: User | null;
@@ -33,8 +36,35 @@ export const useAuthStore = create<AuthState>()(
       setAuth: (user, accessToken, refreshToken) =>
         set({ user, accessToken, refreshToken, error: null }),
 
-      logout: () =>
-        set({ user: null, accessToken: null, refreshToken: null }),
+      logout: () => {
+        // Best-effort server-side revocation: bumps the user's tokenVersion so
+        // any outstanding refresh token stops working. Fire-and-forget with a
+        // raw fetch (importing the api client here would create a cycle).
+        const token = useAuthStore.getState().accessToken;
+        if (token) {
+          const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+          fetch(`${base}/auth/logout`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${token}` },
+          }).catch(() => {});
+        }
+        set({ user: null, accessToken: null, refreshToken: null });
+        // Clear in-memory app state so one account's match/queue/challenge/chat
+        // can't leak into the next session on a shared machine.
+        useGameStore.getState().reset();
+        useChallengeStore.setState({
+          challenge: null,
+          error: null,
+          incoming: null,
+          declinedBy: null,
+        });
+        useChatStore.setState({
+          joined: false,
+          canSend: false,
+          messages: [],
+          matchMessages: [],
+        });
+      },
 
       setLoading: (isLoading) => set({ isLoading }),
 

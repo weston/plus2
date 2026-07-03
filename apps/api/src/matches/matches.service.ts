@@ -10,51 +10,9 @@ import {
   MoveRecord,
   WINS_NEEDED,
   BEST_OF,
-  SCRAMBLE_LENGTHS,
+  generateScramble,
   getLeagueFromRating,
 } from '@plus2/shared';
-
-// Simple scramble generator (in production, use cubing.js)
-function generateScramble(puzzleSize: PuzzleSize): string {
-  const moves3x3 = ['R', 'L', 'U', 'D', 'F', 'B'];
-  const modifiers = ['', "'", '2'];
-  const length = SCRAMBLE_LENGTHS[puzzleSize];
-
-  const scramble: string[] = [];
-  let lastMove = '';
-  let secondLastMove = '';
-
-  for (let i = 0; i < length; i++) {
-    let move: string;
-    do {
-      move = moves3x3[Math.floor(Math.random() * moves3x3.length)];
-    } while (
-      move === lastMove ||
-      // Avoid R L R patterns (same axis)
-      (move === secondLastMove && isOpposite(move, lastMove))
-    );
-
-    const modifier = modifiers[Math.floor(Math.random() * modifiers.length)];
-    scramble.push(move + modifier);
-
-    secondLastMove = lastMove;
-    lastMove = move;
-  }
-
-  return scramble.join(' ');
-}
-
-function isOpposite(move1: string, move2: string): boolean {
-  const opposites: Record<string, string> = {
-    R: 'L',
-    L: 'R',
-    U: 'D',
-    D: 'U',
-    F: 'B',
-    B: 'F',
-  };
-  return opposites[move1] === move2;
-}
 
 @Injectable()
 export class MatchesService {
@@ -570,6 +528,33 @@ export class MatchesService {
       if (roundComplete) {
         this.resolveRoundWinner(solve, match);
         await this.matchRepository.save(match);
+
+        // Credit solve stats for a player who COMPLETED but whose round is only
+        // now closing (they finished first, the opponent then DNF'd). Without
+        // this their solve is silently dropped — recordSolveComplete only awards
+        // stats when its own call is the one that completes the round.
+        const statUpdates: Promise<void>[] = [];
+        if (solve.p1Status === 'completed') {
+          statUpdates.push(
+            this.usersService.incrementSolveStats(
+              match.player1Id,
+              match.puzzleSize,
+              solve.p1IsWinner || false,
+              solve.p1TimeMs!,
+            ),
+          );
+        }
+        if (solve.p2Status === 'completed') {
+          statUpdates.push(
+            this.usersService.incrementSolveStats(
+              match.player2Id,
+              match.puzzleSize,
+              solve.p2IsWinner || false,
+              solve.p2TimeMs!,
+            ),
+          );
+        }
+        await Promise.all(statUpdates);
       }
 
       await this.solveRepository.save(solve);
@@ -603,7 +588,7 @@ export class MatchesService {
       where: [{ player1Id: userId }, { player2Id: userId }],
       relations: ['player1', 'player2'],
       order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
+      skip: (Math.max(1, Math.floor(page) || 1) - 1) * limit,
       take: limit,
     });
 

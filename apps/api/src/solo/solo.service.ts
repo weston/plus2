@@ -12,7 +12,7 @@ import {
   MoveRecord,
   GHOST_CLOSE_MMR_RANGE,
   GHOST_WIDE_MMR_RANGE,
-  SCRAMBLE_LENGTHS,
+  generateScramble,
   getLeagueFromRating,
   getSeedTargetTime,
   calculateGhostRatingChange,
@@ -22,41 +22,8 @@ import {
 const ROUNDS_PER_SESSION = 5;
 const GHOST_AGE_LIMIT_MS = 7 * 24 * 60 * 60 * 1000; // 1 week in ms
 
-// Simple scramble generator
-function generateScramble(puzzleSize: PuzzleSize): string {
-  const moves3x3 = ['R', 'L', 'U', 'D', 'F', 'B'];
-  const modifiers = ['', "'", '2'];
-  const length = SCRAMBLE_LENGTHS[puzzleSize];
-
-  const scramble: string[] = [];
-  let lastMove = '';
-  let secondLastMove = '';
-
-  for (let i = 0; i < length; i++) {
-    let move: string;
-    do {
-      move = moves3x3[Math.floor(Math.random() * moves3x3.length)];
-    } while (
-      move === lastMove ||
-      (move === secondLastMove && isOpposite(move, lastMove))
-    );
-
-    const modifier = modifiers[Math.floor(Math.random() * modifiers.length)];
-    scramble.push(move + modifier);
-
-    secondLastMove = lastMove;
-    lastMove = move;
-  }
-
-  return scramble.join(' ');
-}
-
-function isOpposite(move1: string, move2: string): boolean {
-  const opposites: Record<string, string> = {
-    R: 'L', L: 'R', U: 'D', D: 'U', F: 'B', B: 'F',
-  };
-  return opposites[move1] === move2;
-}
+// Scrambles come from @plus2/shared generateScramble (proper per-size move set,
+// with wide moves on big cubes).
 
 @Injectable()
 export class SoloService {
@@ -179,52 +146,57 @@ export class SoloService {
     roundNumber: number;
     isSessionComplete: boolean;
   } | null> {
-    const session = await this.getSession(sessionId);
-    const solve = await this.solveRepository.findOne({
-      where: { sessionId, roundNumber },
-    });
+    // Serialize against recordMove for the same (session, round). Without the
+    // shared lock, a late move write could land after the completion save and
+    // revert the solve's status/time.
+    return this.withLock(`move:${sessionId}:${roundNumber}`, async () => {
+      const session = await this.getSession(sessionId);
+      const solve = await this.solveRepository.findOne({
+        where: { sessionId, roundNumber },
+      });
 
-    if (!solve) return null;
+      if (!solve) return null;
 
-    const now = new Date();
+      const now = new Date();
 
-    if (isDnf) {
-      solve.status = 'dnf';
-      solve.timeMs = null;
-    } else {
-      solve.status = 'completed';
-      solve.solveEndAt = now;
-      // Use client-provided time if available (more accurate since client tracks solve start)
-      // Fall back to server calculation if possible; otherwise leave null rather
-      // than recording a bogus 0 ms solve that would skew the average.
-      solve.timeMs = clientTimeMs ?? (solve.solveStartAt
-        ? now.getTime() - solve.solveStartAt.getTime()
-        : null);
-    }
-
-    // Store moves if provided (batch submission)
-    if (moves && moves.length > 0) {
-      solve.moves = moves;
-      solve.moveCount = moves.length;
-      // Set solveStartAt based on client time if not already set
-      if (!solve.solveStartAt && clientTimeMs) {
-        solve.solveStartAt = new Date(now.getTime() - clientTimeMs);
+      if (isDnf) {
+        solve.status = 'dnf';
+        solve.timeMs = null;
+      } else {
+        solve.status = 'completed';
+        solve.solveEndAt = now;
+        // Use client-provided time if available (more accurate since client tracks solve start)
+        // Fall back to server calculation if possible; otherwise leave null rather
+        // than recording a bogus 0 ms solve that would skew the average.
+        solve.timeMs = clientTimeMs ?? (solve.solveStartAt
+          ? now.getTime() - solve.solveStartAt.getTime()
+          : null);
       }
-    }
 
-    await this.solveRepository.save(solve);
+      // Store moves if provided (batch submission)
+      if (moves && moves.length > 0) {
+        solve.moves = moves;
+        solve.moveCount = moves.length;
+        // Set solveStartAt based on client time if not already set
+        if (!solve.solveStartAt && clientTimeMs) {
+          solve.solveStartAt = new Date(now.getTime() - clientTimeMs);
+        }
+      }
 
-    // Update completed rounds count (never move it backwards on out-of-order/retried completions)
-    session.completedRounds = Math.max(session.completedRounds, roundNumber);
-    await this.sessionRepository.save(session);
+      await this.solveRepository.save(solve);
 
-    const isSessionComplete = roundNumber >= ROUNDS_PER_SESSION;
+      // Update completed rounds count (never move it backwards on out-of-order/retried completions)
+      session.completedRounds = Math.max(session.completedRounds, roundNumber);
+      await this.sessionRepository.save(session);
 
-    return {
-      timeMs: solve.timeMs,
-      roundNumber,
-      isSessionComplete,
-    };
+      const isSessionComplete = roundNumber >= ROUNDS_PER_SESSION;
+
+      return {
+        timeMs: solve.timeMs,
+        roundNumber,
+        isSessionComplete,
+      };
+    });
   }
 
   async completeSession(sessionId: string): Promise<{
@@ -381,7 +353,7 @@ export class SoloService {
       where: { userId, status: 'completed' },
       relations: ['solves'],
       order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
+      skip: (Math.max(1, Math.floor(page) || 1) - 1) * limit,
       take: limit,
     });
 
@@ -601,8 +573,8 @@ export class SoloService {
 
   /**
    * Snapshot a set of solves into a completed ghost session so others can race
-   * it. Used to grow the ghost pool from ranked play (and, later, practice).
-   * Respects the user's ghost opt-out preference.
+   * it. Used to grow the ghost pool from ranked play (and, later, zen). Every
+   * player's solves feed the pool — there is no opt-out.
    */
   async recordGhost(
     userId: string,
@@ -841,7 +813,7 @@ export class SoloService {
       where: { racerId: userId },
       relations: ['ghostUser'],
       order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
+      skip: (Math.max(1, Math.floor(page) || 1) - 1) * limit,
       take: limit,
     });
 
@@ -860,7 +832,7 @@ export class SoloService {
       where: { ghostUserId: userId },
       relations: ['racer'],
       order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
+      skip: (Math.max(1, Math.floor(page) || 1) - 1) * limit,
       take: limit,
     });
 

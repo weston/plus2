@@ -1,13 +1,13 @@
 import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { User } from './user.entity';
 import { UserPuzzleStats } from './user-puzzle-stats.entity';
 import { Match } from '../matches/match.entity';
 import { Solve } from '../matches/solve.entity';
 import { SoloSession } from '../solo/solo-session.entity';
 import { SoloSolve } from '../solo/solo-solve.entity';
-import { PuzzleSize, getLeagueFromRating, calculateRatingChange } from '@plus2/shared';
+import { PuzzleSize, MatchStatus, getLeagueFromRating, calculateRatingChange } from '@plus2/shared';
 
 @Injectable()
 export class UsersService {
@@ -54,6 +54,9 @@ export class UsersService {
 
   async getProfile(userId: string) {
     const user = await this.findByIdWithStats(userId);
+    // NOTE: isAdmin is intentionally NOT included here — this shape is served on
+    // the guard-less public GET /users/:id. The authenticated self adds isAdmin
+    // in the controller's getMe handler.
     return {
       id: user.id,
       username: user.username,
@@ -61,7 +64,6 @@ export class UsersService {
       league: user.league,
       country: user.country,
       wcaId: user.wcaId || null,
-      isAdmin: !!user.isAdmin,
       createdAt: user.createdAt.toISOString(),
       stats: user.puzzleStats.map((s) => ({
         id: s.id,
@@ -80,10 +82,13 @@ export class UsersService {
   }
 
   async getProfileByUsername(username: string) {
-    const user = await this.userRepository.findOne({
-      where: { username },
-      relations: ['puzzleStats'],
-    });
+    // Case-insensitive lookup (usernames are unique case-insensitively), matching
+    // findByUsername / register / updateUsername.
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .leftJoinAndSelect('user.puzzleStats', 'puzzleStats')
+      .where('LOWER(user.username) = LOWER(:username)', { username })
+      .getOne();
     if (!user) {
       throw new NotFoundException('User not found');
     }
@@ -257,7 +262,6 @@ export class UsersService {
     preferences: {
       animationSpeed?: number;
       cubeColors?: Record<string, string>;
-      ghostOptOut?: boolean;
       cubeLogo?: string | null;
     },
   ) {
@@ -331,11 +335,13 @@ export class UsersService {
   }
 
   async getMmrHistory(userId: string): Promise<{ date: string; mmr: number; matchId: string }[]> {
-    // Get all completed matches for the user
+    // Get all finished matches for the user. Forfeits also record MmrAfter under
+    // the 'forfeited' status, so include both.
+    const finished = In<MatchStatus>(['completed', 'forfeited']);
     const matches = await this.matchRepository.find({
       where: [
-        { player1Id: userId, status: 'completed' },
-        { player2Id: userId, status: 'completed' },
+        { player1Id: userId, status: finished },
+        { player2Id: userId, status: finished },
       ],
       order: { endedAt: 'ASC' },
     });
@@ -346,7 +352,8 @@ export class UsersService {
       const isPlayer1 = match.player1Id === userId;
       const mmrAfter = isPlayer1 ? match.player1MmrAfter : match.player2MmrAfter;
 
-      if (mmrAfter && match.endedAt) {
+      // != null so a legitimate 0-MMR datapoint isn't dropped as falsy.
+      if (mmrAfter != null && match.endedAt) {
         history.push({
           date: match.endedAt.toISOString(),
           mmr: mmrAfter,

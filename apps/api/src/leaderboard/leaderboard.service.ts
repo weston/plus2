@@ -20,6 +20,9 @@ export class LeaderboardService {
     limit = 50,
     league?: LeagueTier,
   ): Promise<{ entries: LeaderboardEntry[]; total: number }> {
+    // Clamp to a valid 1-based page so `?page=0` doesn't produce a negative
+    // OFFSET (which Postgres rejects with an error).
+    const safePage = Math.max(1, Math.floor(page) || 1);
     let query = this.userRepository
       .createQueryBuilder('user')
       .select([
@@ -42,14 +45,17 @@ export class LeaderboardService {
           .getQuery();
         return `EXISTS ${sub}`;
       })
-      .orderBy('user.mmr', 'DESC');
+      .orderBy('user.mmr', 'DESC')
+      // Deterministic tiebreaker so users tied on MMR keep a stable order
+      // across pages (otherwise Postgres may duplicate/drop rows).
+      .addOrderBy('user.id', 'ASC');
 
     if (league) {
       query = query.andWhere('user.league = :league', { league });
     }
 
     const [users, total] = await query
-      .skip((page - 1) * limit)
+      .skip((safePage - 1) * limit)
       .take(limit)
       .getManyAndCount();
 
@@ -80,7 +86,7 @@ export class LeaderboardService {
       );
 
       return {
-        rank: (page - 1) * limit + index + 1,
+        rank: (safePage - 1) * limit + index + 1,
         userId: user.id,
         username: user.username,
         mmr: user.mmr,
@@ -102,6 +108,9 @@ export class LeaderboardService {
     limit = 50,
     league?: LeagueTier,
   ): Promise<{ entries: LeaderboardEntry[]; total: number }> {
+    // Clamp to a valid 1-based page so `?page=0` doesn't produce a negative
+    // OFFSET (which Postgres rejects with an error).
+    const safePage = Math.max(1, Math.floor(page) || 1);
     let query = this.statsRepository
       .createQueryBuilder('stats')
       .leftJoinAndSelect('stats.user', 'user')
@@ -109,19 +118,22 @@ export class LeaderboardService {
       // Stats rows are created on first lookup — only rank players who have
       // actually played this puzzle.
       .andWhere('stats.gamesPlayed > 0')
-      .orderBy('stats.mmr', 'DESC');
+      .orderBy('stats.mmr', 'DESC')
+      // Deterministic tiebreaker so rows tied on MMR keep a stable order
+      // across pages (otherwise Postgres may duplicate/drop rows).
+      .addOrderBy('stats.id', 'ASC');
 
     if (league) {
       query = query.andWhere('stats.league = :league', { league });
     }
 
     const [stats, total] = await query
-      .skip((page - 1) * limit)
+      .skip((safePage - 1) * limit)
       .take(limit)
       .getManyAndCount();
 
     const entries: (LeaderboardEntry & { country?: string | null })[] = stats.map((stat, index) => ({
-      rank: (page - 1) * limit + index + 1,
+      rank: (safePage - 1) * limit + index + 1,
       userId: stat.user.id,
       username: stat.user.username,
       mmr: stat.mmr,
@@ -144,6 +156,10 @@ export class LeaderboardService {
 
       if (!userStats) return 0;
 
+      // The board only lists players with at least one game on this puzzle;
+      // a 0-game subject is hidden there, so it must be unranked here too.
+      if (userStats.gamesPlayed <= 0) return 0;
+
       const count = await this.statsRepository
         .createQueryBuilder('stats')
         .where('stats.puzzleSize = :puzzleSize', { puzzleSize })
@@ -155,6 +171,15 @@ export class LeaderboardService {
     } else {
       const user = await this.userRepository.findOne({ where: { id: userId } });
       if (!user) return 0;
+
+      // Match the leaderboard filter: the subject itself must have played at
+      // least one game, otherwise it's hidden from the board and unranked.
+      const subjectGames = await this.statsRepository
+        .createQueryBuilder('stats')
+        .where('stats.userId = :userId', { userId })
+        .andWhere('stats.gamesPlayed > 0')
+        .getCount();
+      if (subjectGames === 0) return 0;
 
       // Match the leaderboard filter: only players with at least one game.
       const count = await this.userRepository

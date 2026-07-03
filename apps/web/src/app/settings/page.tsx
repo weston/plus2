@@ -148,27 +148,37 @@ export default function SettingsPage() {
     if (!editingMove || !activeProfile) return;
 
     e.preventDefault();
-    const key = e.key.toLowerCase();
+    // Ignore bare modifier presses; capture the key case-sensitively (an
+    // uppercase key binds the wide-move variant, matching DEFAULT_KEYBINDINGS).
+    if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
+    const key = e.key;
 
-    // Check for conflicts
-    const conflictingMove = Object.entries(activeProfile.bindings).find(
-      ([move, boundKey]) => boundKey === key && move !== editingMove
-    );
-
-    if (conflictingMove) {
-      setMessage(`Key "${key}" is already bound to ${conflictingMove[0]}`);
+    // bindings is key -> move. If this key already maps to a DIFFERENT move,
+    // it's a conflict — reassigning would steal it.
+    const existingMove = activeProfile.bindings[key];
+    if (existingMove && existingMove !== editingMove) {
+      setMessage(`Key "${key}" is already bound to ${existingMove}`);
       return;
     }
 
-    // Update binding
-    const newBindings = {
-      ...activeProfile.bindings,
-      [editingMove]: key,
-    };
+    // Reassign: drop the edited move's previous key(s), then bind the new key.
+    const newBindings: Record<string, string> = {};
+    for (const [k, m] of Object.entries(activeProfile.bindings)) {
+      if (m === editingMove) continue;
+      newBindings[k] = m;
+    }
+    newBindings[key] = editingMove;
 
     setActiveProfile({ ...activeProfile, bindings: newBindings });
     setEditingMove(null);
     setMessage('');
+  };
+
+  // Reverse lookup: which key currently maps to this move (bindings is key->move).
+  const keyForMove = (move: string): string | null => {
+    if (!activeProfile) return null;
+    const entry = Object.entries(activeProfile.bindings).find(([, m]) => m === move);
+    return entry ? entry[0] : null;
   };
 
   useEffect(() => {
@@ -400,7 +410,7 @@ export default function SettingsPage() {
             <span className="key-badge">
               {editingMove === move
                 ? '...'
-                : activeProfile?.bindings[move] || '-'}
+                : keyForMove(move) || '-'}
             </span>
           </div>
         ))}

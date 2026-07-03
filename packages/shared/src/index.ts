@@ -113,7 +113,7 @@ export interface KeybindingProfile {
   id: string;
   name: string;
   isActive: boolean;
-  bindings: Record<string, string>; // move -> key
+  bindings: Record<string, string>; // key -> move (matches DEFAULT_KEYBINDINGS)
 }
 
 // Key → Move mapping (allows multiple keys per move)
@@ -421,6 +421,51 @@ export const SCRAMBLE_LENGTHS: Record<PuzzleSize, number> = {
   '5x5': 60,
 };
 
+const SCRAMBLE_FACES = ['U', 'D', 'L', 'R', 'F', 'B'] as const;
+const SCRAMBLE_AXIS: Record<string, string> = {
+  U: 'y', D: 'y', L: 'x', R: 'x', F: 'z', B: 'z',
+};
+
+/**
+ * Random-move scramble generator. This is not a random-STATE scramble (that
+ * needs a solver), but a proper WCA-style random-move sequence:
+ *  - correct move set per size — 4x4/5x5 mix in wide moves (Rw etc.) so inner
+ *    layers and centers actually get scrambled (the old generator used only
+ *    outer-face turns, leaving big cubes center-solved);
+ *  - never repeats the same face twice in a row;
+ *  - never puts three moves in a row on the same axis (e.g. R L R).
+ */
+export function generateScramble(puzzleSize: PuzzleSize): string {
+  const length = SCRAMBLE_LENGTHS[puzzleSize];
+  const modifiers = ['', "'", '2'];
+  const useWide = puzzleSize === '4x4' || puzzleSize === '5x5';
+
+  const scramble: string[] = [];
+  let lastFace = '';
+  let lastAxis = '';
+  let secondLastAxis = '';
+
+  for (let i = 0; i < length; i++) {
+    let face: string;
+    do {
+      face = SCRAMBLE_FACES[Math.floor(Math.random() * SCRAMBLE_FACES.length)];
+    } while (
+      face === lastFace ||
+      (SCRAMBLE_AXIS[face] === lastAxis && SCRAMBLE_AXIS[face] === secondLastAxis)
+    );
+
+    const modifier = modifiers[Math.floor(Math.random() * modifiers.length)];
+    const wide = useWide && Math.random() < 0.4 ? 'w' : '';
+    scramble.push(face + wide + modifier);
+
+    secondLastAxis = lastAxis;
+    lastAxis = SCRAMBLE_AXIS[face];
+    lastFace = face;
+  }
+
+  return scramble.join(' ');
+}
+
 // =============================================================================
 // SOLO MODE CONSTANTS
 // =============================================================================
@@ -511,7 +556,7 @@ export function computeBadges(input: {
       label: `${tier.charAt(0).toUpperCase()}${tier.slice(1)} League`,
       description: `Reached the ${tier} league`,
       icon: LEAGUE_BADGE_ICONS[tier],
-      tier: i >= 4 ? 'special' : i >= 2 ? 'gold' : 'silver',
+      tier: i >= 4 ? 'special' : i >= 2 ? 'gold' : i >= 1 ? 'silver' : 'bronze',
     });
   }
 

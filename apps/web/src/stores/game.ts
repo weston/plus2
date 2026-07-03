@@ -88,6 +88,7 @@ interface GameState {
   opponentLastMoveClientTs: number | null;
 
   // Results
+  roundWinner: 'you' | 'opponent' | 'draw' | null;
   matchWinner: 'you' | 'opponent' | null;
   mmrDelta: number;
   newMmr: number;
@@ -169,6 +170,7 @@ const initialState = {
   opponentSolveReceivedAt: null as number | null,
   opponentLastMoveClientTs: null as number | null,
 
+  roundWinner: null as 'you' | 'opponent' | 'draw' | null,
   matchWinner: null as 'you' | 'opponent' | null,
   mmrDelta: 0,
   newMmr: 0,
@@ -281,15 +283,37 @@ export const useGameStore = create<GameState>((set, get) => {
 
   // moveCount: the opponent's true solving-move count — trailing accidental
   // inputs beyond it are dropped so their cube displays the finished state.
+  // The trim must be authoritative: moves still sitting in the 80ms jitter
+  // buffer (opponentMoveQueue) would otherwise drain afterward and re-append
+  // the trailing moves. So cancel the queue timer, apply exactly enough queued
+  // moves to reach moveCount, and drop the rest — leaving the applied set at
+  // precisely moveCount.
   setOpponentDone: (opponentTime, moveCount) =>
-    set((s) => ({
-      opponentTime,
-      opponentDone: true,
-      opponentMoves:
-        typeof moveCount === 'number' && moveCount < s.opponentMoves.length
-          ? s.opponentMoves.slice(0, moveCount)
-          : s.opponentMoves,
-    })),
+    set((s) => {
+      if (typeof moveCount !== 'number') {
+        return { opponentTime, opponentDone: true };
+      }
+      if (s.opponentQueueTimer) clearTimeout(s.opponentQueueTimer);
+      let opponentMoves = s.opponentMoves;
+      if (moveCount < opponentMoves.length) {
+        // Already applied past the real finish (trailing inputs) — trim back.
+        opponentMoves = opponentMoves.slice(0, moveCount);
+      } else if (moveCount > opponentMoves.length && s.opponentMoveQueue.length) {
+        // Some real solving moves are still queued — apply just enough.
+        const needed = moveCount - opponentMoves.length;
+        opponentMoves = [
+          ...opponentMoves,
+          ...s.opponentMoveQueue.slice(0, needed).map((m) => m.move),
+        ];
+      }
+      return {
+        opponentTime,
+        opponentDone: true,
+        opponentMoves,
+        opponentMoveQueue: [],
+        opponentQueueTimer: null,
+      };
+    }),
 
   setOpponentStarted: (clientTs) =>
     set({
@@ -304,6 +328,7 @@ export const useGameStore = create<GameState>((set, get) => {
   setRoundResult: (winner, scores) =>
     set({
       phase: 'round_complete',
+      roundWinner: winner,
       myScore: scores.you,
       opponentScore: scores.opponent,
     }),
@@ -321,7 +346,15 @@ export const useGameStore = create<GameState>((set, get) => {
     // Clear any scheduled moves before resetting
     const state = get();
     state.clearScheduledMoves();
-    set(initialState);
+    // Preserve the NTP clock-sync offset across resets — it's a property of the
+    // live connection, not the match. Wiping it to 0 made the first rematch
+    // round pace the opponent off a bogus zero offset until sync re-settled.
+    set({
+      ...initialState,
+      serverOffsetMs: state.serverOffsetMs,
+      serverOffsetSamples: state.serverOffsetSamples,
+      lastClockSyncAt: state.lastClockSyncAt,
+    });
   },
 
   // Clock synchronization

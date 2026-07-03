@@ -98,6 +98,7 @@ export default function MatchPage() {
     opponentDone,
     opponentSolveReceivedAt, // Local time when we received opponent_started
     opponentLocalSolveStartPerf, // Deterministic opponent solve start
+    roundWinner,
     matchWinner,
     mmrDelta,
     newMmr,
@@ -151,6 +152,10 @@ export default function MatchPage() {
   // Synchronous guard so two keydowns in the same frame can't both start the
   // solve timer (state updates don't apply until the next render).
   const solveStartedRef = useRef(false);
+  // Synchronous guard so two Space presses (or Space + cube auto-detect) in the
+  // same frame can't both emit solve_complete — the state updates below don't
+  // apply until the next render.
+  const solveCompletedRef = useRef(false);
 
   // Timer state for my cube (opponent uses server timestamp from store)
   const [myTimerStart, setMyTimerStart] = useState<number | null>(null);
@@ -192,6 +197,7 @@ export default function MatchPage() {
       setIsSolved(false);
       moveSeqRef.current = 0;
       solveStartedRef.current = false;
+      solveCompletedRef.current = false;
     }
   }, [phase, currentRound]);
 
@@ -272,10 +278,30 @@ export default function MatchPage() {
   // Complete the current solve (shared by spacebar and cube auto-detect).
   const completeSolve = useCallback(async () => {
     if (phase !== 'solving' || !myTimerRunning || isSolved) return;
-    const solveTime = myTimerStart ? Date.now() - myTimerStart : 0;
+    // Synchronous guard: two Space presses (or Space + cube auto-detect) in the
+    // same frame must each not emit solve_complete — the state updates below
+    // don't apply until the next render, so the async checks alone can't dedupe.
+    if (solveCompletedRef.current) return;
+    solveCompletedRef.current = true;
 
-    // Check if cube is actually solved
-    const cubeSolved = (await cubeRef.current?.checkSolved()) ?? false;
+    // The logical cube only reflects a move at its animation END, so pressing
+    // Space during the final move's animation makes checkSolved() briefly
+    // false. If a move is still in flight, wait for it to commit and re-check
+    // rather than scoring an in-progress solve as a DNF.
+    let cubeSolved = (await cubeRef.current?.checkSolved()) ?? false;
+    if (!cubeSolved && cubeRef.current?.hasPendingMoves?.()) {
+      await cubeRef.current?.settle?.();
+      cubeSolved = (await cubeRef.current?.checkSolved()) ?? false;
+    }
+
+    // Stop the clock at the moment the final move was INPUT (move-start), not at
+    // animation commit — the time then excludes the final move's cosmetic
+    // animation, which otherwise adds ~37..660ms depending on the speed pref.
+    let solveTime = myTimerStart ? Date.now() - myTimerStart : 0;
+    if (cubeSolved && myTimerStart) {
+      const stopAt = cubeRef.current?.getLastMoveInputAt?.() ?? null;
+      if (stopAt !== null) solveTime = Math.max(0, stopAt - myTimerStart);
+    }
 
     setIsSolved(cubeSolved);
     setMyTimerRunning(false);
@@ -504,15 +530,24 @@ export default function MatchPage() {
         {phase === 'round_complete' && (
           <div className="card text-center mb-4">
             <h2 className="text-2xl font-bold mb-2">
-              {myTime && opponentTime
-                ? myTime < opponentTime
+              {/* Prefer the store's authoritative winner so an exact tie reads
+                  "Draw" instead of mis-attributing the round from raw times.
+                  Fall back to time-derived text only when it's unset. */}
+              {roundWinner === 'draw'
+                ? 'Draw'
+                : roundWinner === 'you'
                   ? 'You Win This Round!'
-                  : 'Opponent Wins This Round'
-                : myTime
-                  ? 'You Win This Round!'
-                  : opponentTime
+                  : roundWinner === 'opponent'
                     ? 'Opponent Wins This Round'
-                    : 'Round Complete'}
+                    : myTime && opponentTime
+                      ? myTime < opponentTime
+                        ? 'You Win This Round!'
+                        : 'Opponent Wins This Round'
+                      : myTime
+                        ? 'You Win This Round!'
+                        : opponentTime
+                          ? 'Opponent Wins This Round'
+                          : 'Round Complete'}
             </h2>
             <p className="text-gray-400">
               Your time: {myTime ? `${(myTime / 1000).toFixed(2)}s` : 'DNF'}

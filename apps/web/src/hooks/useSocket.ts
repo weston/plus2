@@ -73,7 +73,19 @@ function ensureSocket(): Socket | null {
 
   const userId = decodeJwtSub(token);
   const existing = g.__plus2GameSocket;
-  if (existing && existing.userId === userId) return existing.socket;
+  if (existing && existing.userId === userId) {
+    // Reuse a live connection as-is.
+    if (existing.socket.connected) return existing.socket;
+    // Still connecting or auto-reconnecting after a transient blip — reuse it
+    // rather than churning a fresh socket (and re-registering its handlers).
+    if (existing.socket.active) return existing.socket;
+    // Otherwise the server closed it (e.g. a stale 15m access token was
+    // rejected) and socket.io won't retry on its own. Revive THIS socket: the
+    // auth callback re-reads the current token, so calling ensureSocket again
+    // once a valid token exists brings the connection back.
+    existing.socket.connect();
+    return existing.socket;
+  }
 
   teardownSocket();
 
@@ -107,9 +119,29 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
     shared.clockSyncInterval = setInterval(() => {
       performClockSync(socket);
     }, CLOCK_SYNC_INTERVAL_MS);
+
+    // A reconnect (after a blip or a token-refresh revive) drops the socket's
+    // server-side room membership. Re-establish the session-scoped
+    // subscriptions the server won't restore on its own — but only the ones
+    // actually in use, so a fresh first connection doesn't spam.
+    const game = useGameStore.getState();
+    if (game.phase === 'queuing') {
+      socket.emit('queue_join', { puzzleSize: game.puzzleSize });
+    }
+    if (useChatStore.getState().joined) {
+      socket.emit('chat_join', {});
+    }
   });
 
-  socket.on('disconnect', () => {
+  socket.on('connect_error', (err) => {
+    // Handshake failed: a transport error (socket.io auto-retries these) or the
+    // server middleware rejecting a stale token. An auth rejection leaves the
+    // socket inactive until ensureSocket()/the auth-store subscription revives
+    // it with a fresh token.
+    console.error('Socket connect_error:', err.message);
+  });
+
+  socket.on('disconnect', (reason) => {
     if (shared.clockSyncInterval) {
       clearInterval(shared.clockSyncInterval);
       shared.clockSyncInterval = null;
@@ -117,6 +149,14 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
     // Pending scheduled opponent moves are for a live round; drop them. On
     // reconnect the server resyncs the round (including a move replay).
     useGameStore.getState().clearScheduledMoves();
+
+    // 'io server disconnect' = the server closed us (e.g. an expired access
+    // token mid-session). socket.io does NOT auto-reconnect after a
+    // server-initiated close, so kick it manually — the auth callback reads the
+    // current token, so this self-heals as soon as a valid token exists.
+    if (reason === 'io server disconnect' && useAuthStore.getState().accessToken) {
+      socket.connect();
+    }
   });
 
   // Handle clock sync response
@@ -210,10 +250,14 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
   });
 
   socket.on('inspection_end', (data: { solveStartsAt?: number; solveStartServerMs?: number; solveId?: string }) => {
-    // When inspection ends, both players' solve phase starts
-    // Start my timer and opponent's timer (if not already started)
+    // When inspection ends, both players' solve phase starts.
     const game = useGameStore.getState();
-    game.startSolve(Date.now());
+    // Guard like the solo/ghost handlers: an early finisher is already in
+    // 'waiting_opponent', so a late inspection_end must not knock them back
+    // into 'solving' with a phantom running timer.
+    if (game.phase === 'inspecting') {
+      game.startSolve(Date.now());
+    }
     // Also start opponent's timer if they haven't made a move yet
     // This ensures both timers start when inspection ends
     if (!game.opponentSolveReceivedAt && data.solveStartServerMs) {

@@ -92,20 +92,31 @@ export default function ReplayPage() {
     };
     const a1 = firstAbs(p1);
     const a2 = firstAbs(p2);
-    const anchor = a1 !== null && a2 !== null ? Math.min(a1, a2) : a1 ?? a2;
-    const normalize = (ms: typeof p1) =>
+    // Shared origin across both players: the earliest recorded solve start. Own-
+    // start-relative times (tMs / small clientTs) reset to ~0 per player, which
+    // erases the real cross-player stagger — so shift each player's timeline by
+    // how much later their own solve started than the shared origin.
+    const origin = a1 !== null && a2 !== null ? Math.min(a1, a2) : a1 ?? a2;
+    const offsetFor = (a: number | null) =>
+      a !== null && origin !== null ? Math.max(0, a - origin) : 0;
+    const normalize = (ms: typeof p1, startOffset: number) =>
       ms.map((m, i) => {
-        const t =
-          typeof (m as { tMs?: number }).tMs === 'number'
-            ? (m as { tMs?: number }).tMs!
-            : typeof m.clientTs === 'number' && m.clientTs <= 1e10
-              ? m.clientTs
-              : typeof m.clientTs === 'number' && anchor !== null
-                ? m.clientTs - anchor
-                : i * 500;
+        let t: number;
+        if (typeof (m as { tMs?: number }).tMs === 'number') {
+          // Own-solve-start-relative → lift onto the shared timeline.
+          t = (m as { tMs?: number }).tMs! + startOffset;
+        } else if (typeof m.clientTs === 'number' && m.clientTs <= 1e10) {
+          // Small clientTs is also own-start-relative → same shift.
+          t = m.clientTs + startOffset;
+        } else if (typeof m.clientTs === 'number' && origin !== null) {
+          // Absolute epoch ms already carries the true offset from the origin.
+          t = m.clientTs - origin;
+        } else {
+          t = i * 500;
+        }
         return Number.isFinite(t) ? Math.max(0, t) : i * 500;
       });
-    return { p1: normalize(p1), p2: normalize(p2) };
+    return { p1: normalize(p1, offsetFor(a1)), p2: normalize(p2, offsetFor(a2)) };
   })();
 
   // Playback logic: advance the playhead through the recorded timeline.
