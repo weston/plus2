@@ -198,6 +198,11 @@ export const usersApi = {
   getMmrHistory: (userId: string) =>
     request<Array<{ date: string; mmr: number; matchId: string }>>(`/users/${userId}/mmr-history`),
 
+  getSolveHistory: (userId: string, puzzleSize = '3x3') =>
+    request<Array<{ date: string; timeMs: number; source: 'match' | 'solo' }>>(
+      `/users/${userId}/solve-history?puzzleSize=${puzzleSize}`,
+    ),
+
   getUserMatches: (userId: string, page = 1) =>
     request<{
       matches: Array<{

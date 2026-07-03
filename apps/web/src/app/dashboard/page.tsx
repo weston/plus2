@@ -223,13 +223,11 @@ export default function DashboardPage() {
               </Link>
             </div>
 
+            {/* Ghost creation is folded into racing now: every race you play
+                automatically records a ghost for others. The dedicated Ghost
+                Mode pages still exist (linked from profiles) but aren't a
+                primary destination anymore. */}
             <div className="flex gap-3 mt-3">
-              <Link
-                href="/solo"
-                className="flex-1 py-3 rounded-lg font-medium text-center bg-orange-600 hover:bg-orange-700 transition-all"
-              >
-                Ghost Mode
-              </Link>
               <Link
                 href="/practice"
                 className="flex-1 py-3 rounded-lg font-medium text-center bg-gray-700 hover:bg-gray-600 transition-all"

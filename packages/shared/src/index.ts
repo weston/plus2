@@ -212,6 +212,8 @@ export interface ClientEvents {
   // Attach to / detach from the user's live match (match page mount/unmount).
   match_rejoin: Record<string, never>;
   match_leave: Record<string, never>;
+  // Concede immediately (forfeit loss).
+  match_resign: Record<string, never>;
   // tMs is relative to the player's solve start (0 during inspection)
   move: { seq: number; move: string; tMs: number };
   solve_complete: { timeMs: number | null };

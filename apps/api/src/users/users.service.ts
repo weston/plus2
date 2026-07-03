@@ -4,6 +4,9 @@ import { Repository } from 'typeorm';
 import { User } from './user.entity';
 import { UserPuzzleStats } from './user-puzzle-stats.entity';
 import { Match } from '../matches/match.entity';
+import { Solve } from '../matches/solve.entity';
+import { SoloSession } from '../solo/solo-session.entity';
+import { SoloSolve } from '../solo/solo-solve.entity';
 import { PuzzleSize, getLeagueFromRating, calculateRatingChange } from '@plus2/shared';
 
 @Injectable()
@@ -15,6 +18,12 @@ export class UsersService {
     private statsRepository: Repository<UserPuzzleStats>,
     @InjectRepository(Match)
     private matchRepository: Repository<Match>,
+    @InjectRepository(Solve)
+    private solveRepository: Repository<Solve>,
+    @InjectRepository(SoloSession)
+    private soloSessionRepository: Repository<SoloSession>,
+    @InjectRepository(SoloSolve)
+    private soloSolveRepository: Repository<SoloSolve>,
   ) {}
 
   async findById(id: string): Promise<User> {
@@ -276,6 +285,58 @@ export class UsersService {
     }
 
     return history;
+  }
+
+  /**
+   * Every completed solve time for a user (matches + solo recordings),
+   * chronological — powers the profile progress chart.
+   */
+  async getSolveTimeHistory(
+    userId: string,
+    puzzleSize: PuzzleSize = '3x3',
+    limit = 500,
+  ): Promise<{ date: string; timeMs: number; source: 'match' | 'solo' }[]> {
+    // Match solves: pick this player's side, completed with a real time.
+    const matchSolves = await this.solveRepository
+      .createQueryBuilder('solve')
+      .innerJoin(Match, 'match', 'match.id = solve.matchId')
+      .where('match.puzzleSize = :puzzleSize', { puzzleSize })
+      .andWhere(
+        '((match.player1Id = :userId AND solve.p1Status = :done AND solve.p1TimeMs IS NOT NULL) OR ' +
+          '(match.player2Id = :userId AND solve.p2Status = :done AND solve.p2TimeMs IS NOT NULL))',
+        { userId, done: 'completed' },
+      )
+      .select([
+        'solve.createdAt AS created_at',
+        'CASE WHEN match.player1Id = :userId THEN solve.p1TimeMs ELSE solve.p2TimeMs END AS time_ms',
+      ])
+      .setParameter('userId', userId)
+      .getRawMany<{ created_at: string | Date; time_ms: number }>();
+
+    // Solo solves (ghost recordings / race snapshots).
+    const soloSolves = await this.soloSolveRepository
+      .createQueryBuilder('solve')
+      .innerJoin(SoloSession, 'session', 'session.id = solve.sessionId')
+      .where('session.userId = :userId', { userId })
+      .andWhere('session.puzzleSize = :puzzleSize', { puzzleSize })
+      .andWhere("solve.status = 'completed'")
+      .andWhere('solve.timeMs IS NOT NULL')
+      .select(['solve.createdAt AS created_at', 'solve.timeMs AS time_ms'])
+      .getRawMany<{ created_at: string | Date; time_ms: number }>();
+
+    const toPoint = (r: { created_at: string | Date; time_ms: number }, source: 'match' | 'solo') => ({
+      date: new Date(r.created_at).toISOString(),
+      timeMs: Number(r.time_ms),
+      source,
+    });
+
+    return [
+      ...matchSolves.map((r) => toPoint(r, 'match' as const)),
+      ...soloSolves.map((r) => toPoint(r, 'solo' as const)),
+    ]
+      .filter((p) => Number.isFinite(p.timeMs) && p.timeMs > 0)
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(-limit);
   }
 
   /**

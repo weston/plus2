@@ -233,8 +233,9 @@ export default function SoloPage() {
             <div className="card">
               <h2 className="text-xl font-semibold mb-2">Create Ghost Solves</h2>
               <p className="text-gray-400 mb-4">
-                Record 5 solves that other players can race against. When someone races your ghost,
-                you gain or lose MMR based on the result.
+                Every race you play already records a ghost of you automatically — this
+                page is only for deliberately recording a fresh set of 5 solves. When
+                someone races your ghost, you gain or lose MMR based on the result.
               </p>
 
               <div className="grid grid-cols-2 gap-3 mb-4">

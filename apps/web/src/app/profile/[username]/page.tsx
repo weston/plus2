@@ -121,6 +121,266 @@ function MmrChart({ history }: { history: MmrHistoryPoint[] }) {
   );
 }
 
+interface SolvePoint {
+  date: string;
+  timeMs: number;
+  source: 'match' | 'solo';
+}
+
+// WCA-style trimmed rolling average: over the last n solves, drop the best and
+// worst, mean the rest. Returns null until n solves exist.
+function rollingAverage(times: number[], index: number, n: number): number | null {
+  if (index + 1 < n) return null;
+  const window = times.slice(index + 1 - n, index + 1);
+  const sorted = [...window].sort((a, b) => a - b);
+  const trimmed = sorted.slice(1, -1);
+  return trimmed.reduce((s, t) => s + t, 0) / trimmed.length;
+}
+
+// Solve-time progress chart: singles as muted dots, rolling ao5/ao12 as lines,
+// plotted against date. Colors validated (CVD + contrast) against the card
+// surface (#14141c): ao5 #3987e5, ao12 #199e70, singles muted #898781.
+function SolveTimesChart({ history }: { history: SolvePoint[] }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+
+  if (history.length < 5) {
+    return (
+      <div className="h-40 flex items-center justify-center text-gray-500">
+        Not enough solves yet
+      </div>
+    );
+  }
+
+  const W = 640;
+  const H = 240;
+  const PAD = { top: 12, right: 56, bottom: 24, left: 44 };
+  const plotW = W - PAD.left - PAD.right;
+  const plotH = H - PAD.top - PAD.bottom;
+
+  const times = history.map((p) => p.timeMs);
+  const ao5 = times.map((_, i) => rollingAverage(times, i, 5));
+  const ao12 = times.map((_, i) => rollingAverage(times, i, 12));
+
+  const ts = history.map((p) => new Date(p.date).getTime());
+  // Index-based x with date ticks: solves arrive in session bursts, so a
+  // date-scaled axis collapses everything into vertical stripes. Uniform
+  // solve spacing (the cubing convention) keeps the trend readable while the
+  // tick labels still anchor it in calendar time.
+  const xFor = (i: number) => PAD.left + (i / Math.max(1, history.length - 1)) * plotW;
+
+  const allVals = [...times, ...ao5, ...ao12].filter((v): v is number => v !== null);
+  const minV = Math.min(...allVals) * 0.92;
+  const maxV = Math.max(...allVals) * 1.05;
+  const yFor = (v: number) => PAD.top + plotH - ((v - minV) / (maxV - minV || 1)) * plotH;
+
+  // ~4 clean y ticks in seconds
+  const tickCount = 4;
+  const yTicks = Array.from({ length: tickCount }, (_, i) => minV + ((maxV - minV) * (i + 0.5)) / tickCount);
+  // 3 x (date) ticks — drop consecutive duplicates so labels never collide
+  const shortDateOf = (t: number) =>
+    new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const xTickIdx = [0, Math.floor(history.length / 2), history.length - 1].filter(
+    (idx, k, arr) => k === 0 || shortDateOf(ts[idx]) !== shortDateOf(ts[arr[k - 1]]),
+  );
+
+  const linePath = (vals: (number | null)[]) =>
+    vals
+      .map((v, i) => (v === null ? null : `${xFor(i).toFixed(1)},${yFor(v).toFixed(1)}`))
+      .filter(Boolean)
+      .join(' ');
+
+  const fmtSec = (ms: number) => (ms / 1000).toFixed(1);
+  const shortDate = shortDateOf;
+
+  const handleMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mx = ((e.clientX - rect.left) / rect.width) * W;
+    let best = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < history.length; i++) {
+      const d = Math.abs(xFor(i) - mx);
+      if (d < bestDist) {
+        bestDist = d;
+        best = i;
+      }
+    }
+    setHoverIdx(best);
+  };
+
+  const hover = hoverIdx !== null
+    ? {
+        i: hoverIdx,
+        x: xFor(hoverIdx),
+        rows: [
+          ['single', times[hoverIdx], '#898781'],
+          ['ao5', ao5[hoverIdx], '#3987e5'],
+          ['ao12', ao12[hoverIdx], '#199e70'],
+        ].filter(([, v]) => v !== null) as Array<[string, number, string]>,
+      }
+    : null;
+  const tooltipW = 108;
+  const tooltipX = hover ? Math.min(Math.max(hover.x + 8, PAD.left), W - PAD.right - tooltipW) : 0;
+
+  return (
+    <div>
+      {/* Legend: identity via glyph + text token, never text in series color */}
+      <div className="flex gap-4 text-xs text-gray-400 mb-2">
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-2 h-2 rounded-full" style={{ background: '#898781' }} />
+          single
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-4 h-0.5 rounded" style={{ background: '#3987e5' }} />
+          ao5
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="inline-block w-4 h-0.5 rounded" style={{ background: '#199e70' }} />
+          ao12
+        </span>
+      </div>
+
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full h-auto"
+        onMouseMove={handleMove}
+        onMouseLeave={() => setHoverIdx(null)}
+      >
+        {/* hairline gridlines + y tick labels (seconds) */}
+        {yTicks.map((v) => (
+          <g key={v}>
+            <line
+              x1={PAD.left}
+              x2={W - PAD.right}
+              y1={yFor(v)}
+              y2={yFor(v)}
+              stroke="rgba(255,255,255,0.08)"
+              strokeWidth="1"
+            />
+            <text
+              x={PAD.left - 6}
+              y={yFor(v) + 3}
+              textAnchor="end"
+              fontSize="10"
+              fill="#898781"
+              style={{ fontVariantNumeric: 'tabular-nums' }}
+            >
+              {fmtSec(v)}s
+            </text>
+          </g>
+        ))}
+
+        {/* x tick labels (dates) */}
+        {xTickIdx.map((i, k) => (
+          <text
+            key={k}
+            x={xFor(i)}
+            y={H - 8}
+            textAnchor={k === 0 ? 'start' : k === xTickIdx.length - 1 ? 'end' : 'middle'}
+            fontSize="10"
+            fill="#898781"
+          >
+            {shortDate(ts[i])}
+          </text>
+        ))}
+
+        {/* singles: muted context dots */}
+        {history.map((p, i) => (
+          <circle key={i} cx={xFor(i)} cy={yFor(p.timeMs)} r="2.4" fill="#898781" opacity="0.5" />
+        ))}
+
+        {/* rolling averages */}
+        <polyline
+          points={linePath(ao5)}
+          fill="none"
+          stroke="#3987e5"
+          strokeWidth="2"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+        <polyline
+          points={linePath(ao12)}
+          fill="none"
+          stroke="#199e70"
+          strokeWidth="2"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+
+        {/* direct end labels (ink, beside the colored mark) */}
+        {(() => {
+          const lastAo5 = [...ao5].reverse().findIndex((v) => v !== null);
+          const lastAo12 = [...ao12].reverse().findIndex((v) => v !== null);
+          const i5 = lastAo5 >= 0 ? ao5.length - 1 - lastAo5 : -1;
+          const i12 = lastAo12 >= 0 ? ao12.length - 1 - lastAo12 : -1;
+          let y5 = i5 >= 0 ? yFor(ao5[i5]!) + 3 : 0;
+          let y12 = i12 >= 0 ? yFor(ao12[i12]!) + 3 : 0;
+          // Nudge apart when the line ends converge so the labels don't overlap.
+          if (i5 >= 0 && i12 >= 0 && Math.abs(y5 - y12) < 12) {
+            const gap = 12 - Math.abs(y5 - y12);
+            if (y5 <= y12) { y5 -= gap / 2; y12 += gap / 2; }
+            else { y12 -= gap / 2; y5 += gap / 2; }
+          }
+          return (
+            <>
+              {i5 >= 0 && (
+                <text x={W - PAD.right + 6} y={y5} fontSize="10" fill="#c3c2b7">
+                  ao5
+                </text>
+              )}
+              {i12 >= 0 && (
+                <text x={W - PAD.right + 6} y={y12} fontSize="10" fill="#c3c2b7">
+                  ao12
+                </text>
+              )}
+            </>
+          );
+        })()}
+
+        {/* hover: crosshair + tooltip */}
+        {hover && (
+          <g pointerEvents="none">
+            <line
+              x1={hover.x}
+              x2={hover.x}
+              y1={PAD.top}
+              y2={H - PAD.bottom}
+              stroke="rgba(255,255,255,0.18)"
+              strokeWidth="1"
+            />
+            <circle cx={hover.x} cy={yFor(times[hover.i])} r="3.5" fill="#898781" stroke="#14141c" strokeWidth="2" />
+            <rect
+              x={tooltipX}
+              y={PAD.top}
+              width={tooltipW}
+              height={16 + hover.rows.length * 14}
+              rx="6"
+              fill="#1f1f2b"
+              stroke="rgba(255,255,255,0.12)"
+            />
+            <text x={tooltipX + 8} y={PAD.top + 13} fontSize="9" fill="#898781">
+              {shortDate(ts[hover.i])}
+            </text>
+            {hover.rows.map(([label, v, color], r) => (
+              <g key={label}>
+                <circle cx={tooltipX + 11} cy={PAD.top + 24 + r * 14} r="3" fill={color} />
+                <text
+                  x={tooltipX + 19}
+                  y={PAD.top + 27 + r * 14}
+                  fontSize="10"
+                  fill="#c3c2b7"
+                  style={{ fontVariantNumeric: 'tabular-nums' }}
+                >
+                  {label} {fmtSec(v)}s
+                </text>
+              </g>
+            ))}
+          </g>
+        )}
+      </svg>
+    </div>
+  );
+}
+
 export default function ProfilePage() {
   const params = useParams();
   const username = params.username as string;
@@ -128,6 +388,7 @@ export default function ProfilePage() {
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [mmrHistory, setMmrHistory] = useState<MmrHistoryPoint[]>([]);
+  const [solveHistory, setSolveHistory] = useState<SolvePoint[]>([]);
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const [ghostRecordingCount, setGhostRecordingCount] = useState(0);
   const [availableGhostsCount, setAvailableGhostsCount] = useState(0);
@@ -160,9 +421,10 @@ export default function ProfilePage() {
           setChampionships(null);
         }
 
-        // Load MMR history, matches, ghost races, and ghost recording count
-        const [historyData, matchesData, ghostRacesData, ghostData] = await Promise.all([
+        // Load MMR history, solve history, matches, ghost races, and ghost recording count
+        const [historyData, solveHistoryData, matchesData, ghostRacesData, ghostData] = await Promise.all([
           usersApi.getMmrHistory(profileData.id),
+          usersApi.getSolveHistory(profileData.id).catch(() => []),
           usersApi.getUserMatches(profileData.id),
           usersApi.getUserGhostRaces(profileData.id),
           usersApi.getGhostRecordingCount(profileData.id),
@@ -170,6 +432,7 @@ export default function ProfilePage() {
         if (cancelled) return;
 
         setMmrHistory(historyData);
+        setSolveHistory(solveHistoryData);
         setGhostRecordingCount(ghostData.count);
 
         // Combine matches and ghost races, then sort by date
@@ -429,6 +692,12 @@ export default function ProfilePage() {
         <div className="card mb-6">
           <h2 className="text-xl font-bold mb-4">MMR History</h2>
           <MmrChart history={mmrHistory} />
+        </div>
+
+        {/* Solve Times Progress */}
+        <div className="card mb-6">
+          <h2 className="text-xl font-bold mb-4">Solve Times</h2>
+          <SolveTimesChart history={solveHistory} />
         </div>
 
         {/* Match History */}

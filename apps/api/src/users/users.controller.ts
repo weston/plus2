@@ -214,6 +214,14 @@ export class UsersController {
     return this.usersService.getMmrHistory(id);
   }
 
+  @Get(':id/solve-history')
+  async getSolveHistory(
+    @Param('id') id: string,
+    @Query('puzzleSize') puzzleSize?: string,
+  ) {
+    return this.usersService.getSolveTimeHistory(id, (puzzleSize as PuzzleSize) || '3x3');
+  }
+
   @Get(':id/ghost-recordings')
   async getGhostRecordingCount(@Param('id') id: string) {
     if (!this.soloService) {

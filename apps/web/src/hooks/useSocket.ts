@@ -374,6 +374,11 @@ export function useSocket() {
     ensureSocket()?.emit('match_leave', {});
   }, []);
 
+  // Concede immediately (forfeit loss, match ends now).
+  const sendResign = useCallback(() => {
+    ensureSocket()?.emit('match_resign', {});
+  }, []);
+
   const sendMove = useCallback((seq: number, move: string) => {
     const socket = ensureSocket();
     if (!socket) return;
@@ -436,6 +441,7 @@ export function useSocket() {
     sendReady,
     sendMatchRejoin,
     sendMatchLeave,
+    sendResign,
     sendMove,
     sendSolveComplete,
     sendRematch,

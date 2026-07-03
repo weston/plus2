@@ -124,6 +124,18 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       solveTimeout?: NodeJS.Timeout;
       solveStartedAt?: number;
       nextRoundTimer?: NodeJS.Timeout;
+      // The racer's own solves, recorded as they play so every race also
+      // grows the ghost pool ("racing IS creating ghosts").
+      roundInspectionStartMs?: number;
+      currentMoves: Array<{ seq: number; move: string; clientTs: number; serverTs: number; tMs: number }>;
+      userSolves: Array<{
+        roundNumber: number;
+        scramble: string;
+        timeMs: number | null;
+        moves: Array<{ seq: number; move: string; clientTs: number; serverTs: number; tMs: number }>;
+        inspectionStartAt?: Date | null;
+        solveStartAt?: Date | null;
+      }>;
     }
   > = new Map();
 
@@ -578,6 +590,18 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       match.player2AbandonTimeout = abandonTimeout;
       match.player2Left = true;
     }
+  }
+
+  /**
+   * Deliberate, immediate concession — unlike match_leave (which starts the
+   * 30s abandon grace period), resigning ends the match right away with a
+   * forfeit loss for the resigner.
+   */
+  @SubscribeMessage('match_resign')
+  async handleMatchResign(@ConnectedSocket() socket: AuthenticatedSocket) {
+    if (!socket.matchId || !socket.userId) return;
+    if (!this.activeMatches.has(socket.matchId)) return;
+    await this.handleForfeit(socket.matchId, socket.userId);
   }
 
   @SubscribeMessage('ready')
@@ -1290,11 +1314,12 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     const race = this.activeGhostRaces.get(socket.ghostRaceId);
     if (!race) return;
 
+    const serverTs = Date.now();
     const isRotation = this.ROTATION_MOVES.includes(data.move);
 
     // Check if this is the first non-rotation move
     if (!isRotation && !race.solveStartedAt) {
-      race.solveStartedAt = Date.now();
+      race.solveStartedAt = serverTs;
       // Set 10-minute timeout
       const raceId = socket.ghostRaceId;
       race.solveTimeout = setTimeout(
@@ -1302,6 +1327,16 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         this.SOLVE_TIMEOUT_MS,
       );
     }
+
+    // Record the racer's move (inspection-relative tMs, the ghost replay
+    // format) — their race becomes a ghost for others when it finishes.
+    race.currentMoves.push({
+      seq: data.seq,
+      move: data.move,
+      clientTs: data.clientTs ?? serverTs,
+      serverTs,
+      tMs: race.roundInspectionStartMs ? serverTs - race.roundInspectionStartMs : 0,
+    });
   }
 
   @SubscribeMessage('ghost_race_complete')
@@ -1330,9 +1365,29 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     // Calculate user's time (server-observed). Stopping on an UNSOLVED cube
     // is a DNF — otherwise instantly stopping the timer would beat the ghost.
-    const userTime =
+    let userTime =
       data?.isDnf || !race.solveStartedAt ? null : Date.now() - race.solveStartedAt;
+    // A non-positive time is a clock/ordering artifact, not a solve — treat
+    // it as a DNF rather than scoring (or snapshotting) an impossible time.
+    if (userTime !== null && userTime <= 0) {
+      console.warn(`[GHOST] impossible userTime ${userTime}ms for race ${socket.ghostRaceId} — recording DNF`);
+      userTime = null;
+    }
     race.userTimes.push(userTime);
+
+    // Snapshot the racer's solve — their race doubles as a ghost recording.
+    const ghostSolveForRound = race.ghostSolves[race.currentRound - 1];
+    if (ghostSolveForRound) {
+      race.userSolves.push({
+        roundNumber: race.currentRound,
+        scramble: ghostSolveForRound.scramble,
+        timeMs: userTime,
+        moves: race.currentMoves,
+        inspectionStartAt: race.roundInspectionStartMs ? new Date(race.roundInspectionStartMs) : null,
+        solveStartAt: race.solveStartedAt ? new Date(race.solveStartedAt) : null,
+      });
+      race.currentMoves = [];
+    }
 
     const ghostTime = race.ghostTimes[race.currentRound - 1];
     const userWonRound = userTime !== null && (ghostTime === null || userTime < ghostTime);
@@ -1495,6 +1550,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       userTimes: [],
       ghostTimes: ghostSolves.map((s) => s.timeMs),
       ghostSolves,
+      currentMoves: [],
+      userSolves: [],
     });
 
     socket.emit('ghost_race_started', {
@@ -1560,6 +1617,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (!ghostSolve) return;
 
     const inspectionStartsAt = Date.now() + 500;
+    race.roundInspectionStartMs = inspectionStartsAt;
+    race.currentMoves = [];
 
     // Find the socket for this race
     const socket = this.findSocketByGhostRace(raceId);
@@ -1599,6 +1658,20 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     race.solveTimeout = undefined;
     race.userTimes.push(null); // DNF
+
+    // Record the DNF round in the racer's ghost snapshot too.
+    const timedOutSolve = race.ghostSolves[race.currentRound - 1];
+    if (timedOutSolve) {
+      race.userSolves.push({
+        roundNumber: race.currentRound,
+        scramble: timedOutSolve.scramble,
+        timeMs: null,
+        moves: race.currentMoves,
+        inspectionStartAt: race.roundInspectionStartMs ? new Date(race.roundInspectionStartMs) : null,
+        solveStartAt: race.solveStartedAt ? new Date(race.solveStartedAt) : null,
+      });
+      race.currentMoves = [];
+    }
 
     const ghostTime = race.ghostTimes[race.currentRound - 1];
 
@@ -1672,6 +1745,22 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         isOldGhost: race.isOldGhost,
       });
       (socket as AuthenticatedSocket).ghostRaceId = undefined;
+    }
+
+    // Racing IS creating ghosts: snapshot the racer's solves into the ghost
+    // pool (post-race MMR as the recording rating, opt-out respected inside
+    // recordGhost). Skip all-DNF races — nothing worth racing against.
+    if (this.soloService && race.userSolves.some((s) => s.timeMs != null)) {
+      try {
+        await this.soloService.recordGhost(
+          race.oderId,
+          race.puzzleSize,
+          result.newMmr,
+          race.userSolves,
+        );
+      } catch (e) {
+        console.error('Ghost snapshot (race) error:', e);
+      }
     }
 
     this.activeGhostRaces.delete(raceId);

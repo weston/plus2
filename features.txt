@@ -29,6 +29,14 @@ Progression / stats
 - Solve analytics: move count, TPS, splits per solve; graphs over time
 - Head-to-head records vs specific players
 
+Customization
+- Custom cube color scheme: let users set each face's color by RGB value (color
+  pickers in settings), with a "Restore defaults" button. Applies to your own
+  cube rendering everywhere (match, solo, replays).
+- Opponents' color schemes travel with them: when you play someone (or race
+  their ghost), THEIR cube renders in THEIR chosen colors on your screen —
+  color scheme becomes part of a player's identity.
+
 Platform
 - Mobile / touch controls (swipe-to-turn or on-screen buttons)
 - Smart-cube (Bluetooth) support for physical cubes

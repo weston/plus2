@@ -107,7 +107,22 @@ export default function MatchPage() {
     solveId,
   } = useGameStore();
 
-  const { sendMove, sendSolveComplete, sendRematch, sendRequeue, sendMatchRejoin, sendMatchLeave } = useSocket();
+  const { sendMove, sendSolveComplete, sendRematch, sendRequeue, sendMatchRejoin, sendMatchLeave, sendResign } = useSocket();
+
+  // Two-step resign: first click arms the confirm, second click concedes.
+  const [confirmResign, setConfirmResign] = useState(false);
+  const confirmResignTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleResign = () => {
+    if (!confirmResign) {
+      setConfirmResign(true);
+      if (confirmResignTimer.current) clearTimeout(confirmResignTimer.current);
+      confirmResignTimer.current = setTimeout(() => setConfirmResign(false), 4000);
+      return;
+    }
+    if (confirmResignTimer.current) clearTimeout(confirmResignTimer.current);
+    setConfirmResign(false);
+    sendResign();
+  };
   const moveSeqRef = useRef(0);
   const cubeRef = useRef<TwistyCubeHandle>(null);
   // Synchronous guard so two keydowns in the same frame can't both start the
@@ -287,6 +302,20 @@ export default function MatchPage() {
             <span className="text-gray-500 mx-2">-</span>
             <span className="text-red-500">{opponentScore}</span>
           </div>
+          {phase !== 'match_complete' ? (
+            <button
+              onClick={handleResign}
+              className={`px-3 py-1 rounded text-sm transition-colors ${
+                confirmResign
+                  ? 'bg-red-600 hover:bg-red-700 text-white font-bold'
+                  : 'bg-gray-800 text-gray-400 hover:text-white'
+              }`}
+            >
+              {confirmResign ? 'Confirm resign?' : 'Resign'}
+            </button>
+          ) : (
+            <div className="w-20" />
+          )}
         </header>
 
         {/* Scramble and Inspection Timer */}
