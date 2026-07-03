@@ -10,6 +10,7 @@ import { useKeybindings } from '@/hooks/useKeybindings';
 import { TwistyCube, TwistyCubeHandle } from '@/components/TwistyCube';
 import { LeagueBadge } from '@/components/LeagueBadge';
 import { CountryFlag } from '@/components/CountryFlag';
+import { ReportButton } from '@/components/ReportButton';
 import type { PuzzleSize } from '@plus2/shared';
 
 const PUZZLE_SIZES: PuzzleSize[] = ['2x2', '3x3', '4x4', '5x5'];
@@ -493,6 +494,17 @@ function GhostRaceContent() {
               Dashboard
             </button>
           </div>
+
+          {race.ghostUserId && race.ghostSessionId && (
+            <div className="mt-4">
+              <ReportButton
+                reportedUserId={race.ghostUserId}
+                reportedUsername={race.ghostUsername}
+                contextType="ghost"
+                ghostSessionId={race.ghostSessionId}
+              />
+            </div>
+          )}
         </div>
       </div>
     );

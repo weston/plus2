@@ -117,6 +117,7 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<Stats[]>([]);
   const [selectedSize, setSelectedSize] = useState<PuzzleSize>('3x3');
   const [ghostRaces, setGhostRaces] = useState<GhostRace[]>([]);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   // Redirect if not logged in (wait for hydration first)
   useEffect(() => {
@@ -131,6 +132,7 @@ export default function DashboardPage() {
 
     usersApi.getMe(accessToken).then((data) => {
       setStats(data.stats as Stats[]);
+      setIsAdmin(!!data.isAdmin);
     }).catch(() => {
       // Leave stats empty on failure rather than throwing an unhandled rejection
       setStats([]);
@@ -238,6 +240,11 @@ export default function DashboardPage() {
             <Link href="/leaderboard" className="text-gray-400 hover:text-white">
               Leaderboard
             </Link>
+            {isAdmin && (
+              <Link href="/admin/reports" className="text-yellow-500 hover:text-yellow-400">
+                Reports
+              </Link>
+            )}
             <Link href="/settings" className="text-gray-400 hover:text-white">
               Settings
             </Link>

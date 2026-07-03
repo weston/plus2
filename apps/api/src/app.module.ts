@@ -9,6 +9,7 @@ import { LeaderboardModule } from './leaderboard/leaderboard.module';
 import { KeybindingsModule } from './keybindings/keybindings.module';
 import { HealthModule } from './health/health.module';
 import { SoloModule } from './solo/solo.module';
+import { ReportsModule } from './reports/reports.module';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { SoloModule } from './solo/solo.module';
     KeybindingsModule,
     HealthModule,
     SoloModule,
+    ReportsModule,
   ],
 })
 export class AppModule {}

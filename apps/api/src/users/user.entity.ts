@@ -77,6 +77,9 @@ export class User {
   @OneToMany(() => KeybindingProfile, (profile) => profile.user)
   keybindingProfiles: KeybindingProfile[];
 
+  @Column({ name: 'is_admin', type: 'boolean', default: false })
+  isAdmin: boolean;
+
   @Column({ type: 'json', nullable: true })
   preferences: {
     animationSpeed?: number;

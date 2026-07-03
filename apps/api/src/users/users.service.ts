@@ -61,6 +61,7 @@ export class UsersService {
       league: user.league,
       country: user.country,
       wcaId: user.wcaId || null,
+      isAdmin: !!user.isAdmin,
       createdAt: user.createdAt.toISOString(),
       stats: user.puzzleStats.map((s) => ({
         id: s.id,

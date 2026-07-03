@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectRepository, InjectDataSource } from '@nestjs/typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { User } from '../users/user.entity';
 import { UserPuzzleStats } from '../users/user-puzzle-stats.entity';
 import { PuzzleSize, LeaderboardEntry, LeagueTier } from '@plus2/shared';
@@ -12,6 +12,7 @@ export class LeaderboardService {
     private userRepository: Repository<User>,
     @InjectRepository(UserPuzzleStats)
     private statsRepository: Repository<UserPuzzleStats>,
+      @InjectDataSource() private dataSource: DataSource,
   ) {}
 
   async getGlobalLeaderboard(
@@ -173,5 +174,52 @@ export class LeaderboardService {
 
       return count + 1;
     }
+  }
+
+  /**
+   * A random real recorded solve (with per-move timing) for the home-page
+   * hero cube. Filters to reasonable, complete solves.
+   */
+  async getShowcaseSolve(): Promise<{
+    scramble: string;
+    timeMs: number;
+    username: string;
+    moves: Array<{ move: string; tMs: number }>;
+  } | null> {
+    const rows = await this.dataSource.query(
+      `SELECT ss.moves AS moves, ss.scramble AS scramble, ss.time_ms AS "timeMs", u.username AS username
+       FROM solo_solves ss
+       JOIN solo_sessions s ON s.id = ss.session_id
+       JOIN users u ON u.id = s.user_id
+       WHERE ss.status = 'completed' AND ss.time_ms IS NOT NULL
+         AND ss.time_ms BETWEEN 3000 AND 90000 AND ss.move_count >= 16
+       ORDER BY RANDOM() LIMIT 1`,
+    );
+    const row = rows?.[0];
+    if (!row) return null;
+
+    let raw: Array<{ move: string; tMs?: number }> = [];
+    try {
+      raw = typeof row.moves === 'string' ? JSON.parse(row.moves) : row.moves || [];
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(raw) || raw.length < 4) return null;
+
+    // Rebase to start at 0 and clamp gaps so stale timestamps or inspection
+    // pauses don't stall the hero animation.
+    const ts = raw.map((m, i) => ({
+      move: m.move,
+      t: typeof m.tMs === 'number' && Number.isFinite(m.tMs) ? m.tMs : i * 250,
+    }));
+    const moves: Array<{ move: string; tMs: number }> = [];
+    let acc = 0;
+    for (let i = 0; i < ts.length; i++) {
+      const gap = i === 0 ? 0 : Math.min(Math.max(ts[i].t - ts[i - 1].t, 40), 1500);
+      acc += gap;
+      moves.push({ move: ts[i].move, tMs: acc });
+    }
+
+    return { scramble: row.scramble, timeMs: Number(row.timeMs), username: row.username, moves };
   }
 }

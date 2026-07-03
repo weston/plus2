@@ -30,6 +30,12 @@ export class LeaderboardController {
     };
   }
 
+  // A random real recorded solve for the home-page hero cube. Public.
+  @Get('showcase')
+  async getShowcase() {
+    return this.leaderboardService.getShowcaseSolve();
+  }
+
   @Get(':puzzle')
   async getPuzzleLeaderboard(
     @Param('puzzle') puzzle: string,

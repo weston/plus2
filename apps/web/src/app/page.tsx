@@ -8,42 +8,105 @@ import { LeagueBadge } from '@/components/LeagueBadge';
 import { leaderboardApi } from '@/lib/api';
 import { LEAGUE_TIERS } from '@plus2/shared';
 
-// Endless twisting for the hero cube: a scramble-ish pool that cycles so the
-// cube keeps evolving instead of ping-ponging.
+// Fallback twisting when no recorded solve is available: a scramble-ish pool
+// that cycles so the cube keeps evolving instead of ping-ponging.
 const HERO_MOVE_POOL = [
   'R', 'U', "F'", 'D', 'L', "B'", 'U', "R'", 'F', "D'", 'B', 'L',
   "U'", 'R', 'D', "F'", "L'", 'B', 'U', 'R', "D'", 'F', "B'", "L'",
 ];
 
+interface ShowcaseSolve {
+  scramble: string;
+  timeMs: number;
+  username: string;
+  moves: Array<{ move: string; tMs: number }>;
+}
+
+// The hero cube replays REAL recorded solves from the community, with their
+// true move timing — then loads the next one.
 function HeroCube() {
+  const [replay, setReplay] = useState<ShowcaseSolve | null>(null);
+  const [fallback, setFallback] = useState(false);
   const [moves, setMoves] = useState<string[]>([]);
   const idxRef = useRef(0);
+  const genRef = useRef(0);
+
+  const loadNext = () => {
+    leaderboardApi
+      .getShowcase()
+      .then((solve) => {
+        if (solve && solve.moves.length >= 4) {
+          setReplay(solve);
+        } else {
+          setFallback(true);
+        }
+      })
+      .catch(() => setFallback(true));
+  };
 
   useEffect(() => {
+    loadNext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Schedule the recorded moves at their true timestamps; pause, then fetch
+  // the next solve.
+  useEffect(() => {
+    if (!replay) return;
+    genRef.current += 1;
+    const gen = genRef.current;
+    setMoves([]);
+    const timers = replay.moves.map((m) =>
+      setTimeout(() => {
+        if (genRef.current === gen) setMoves((prev) => [...prev, m.move]);
+      }, m.tMs + 800),
+    );
+    const total = replay.moves[replay.moves.length - 1]?.tMs ?? 0;
+    const nextTimer = setTimeout(loadNext, total + 4000);
+    return () => {
+      timers.forEach(clearTimeout);
+      clearTimeout(nextTimer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replay]);
+
+  // Fallback: endless pool twisting (e.g. brand-new database).
+  useEffect(() => {
+    if (!fallback) return;
     const iv = setInterval(() => {
       const move = HERO_MOVE_POOL[idxRef.current % HERO_MOVE_POOL.length];
       idxRef.current += 1;
       setMoves((prev) => [...prev, move]);
     }, 900);
     return () => clearInterval(iv);
-  }, []);
+  }, [fallback]);
 
   return (
     <div className="card relative overflow-hidden">
       {/* Mimic the real match header so the hero shows the actual product */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
-          <span className="font-bold text-sm">your opponent</span>
+          <span className="font-bold text-sm">{replay ? replay.username : 'your opponent'}</span>
           <LeagueBadge league="diamond" size="sm" />
-          <span className="text-[10px] font-bold bg-red-600 text-white rounded px-1.5 py-0.5 animate-pulse">
-            LIVE
+          <span className="text-[10px] font-bold bg-purple-600 text-white rounded px-1.5 py-0.5">
+            REPLAY
           </span>
         </div>
-        <span className="font-mono text-sm text-gray-400">12.48</span>
+        <span className="font-mono text-sm text-gray-400">
+          {replay ? (replay.timeMs / 1000).toFixed(2) : '12.48'}
+        </span>
       </div>
-      <TwistyCube puzzleSize="3x3" moves={moves} animationSpeed={1.5} className="h-64 md:h-80" />
+      <TwistyCube
+        puzzleSize="3x3"
+        scramble={replay?.scramble || ''}
+        moves={moves}
+        animationSpeed={4}
+        className="h-64 md:h-80"
+      />
       <p className="text-center text-xs text-gray-500 mt-3">
-        You see every turn of your opponent&apos;s cube, live.
+        {replay
+          ? `A real ${(replay.timeMs / 1000).toFixed(2)}s solve by ${replay.username} — you watch every turn, live.`
+          : "You see every turn of your opponent's cube, live."}
       </p>
     </div>
   );

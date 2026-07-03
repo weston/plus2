@@ -12,6 +12,7 @@ import { TwistyCube, TwistyCubeHandle } from '@/components/TwistyCube';
 import { Timer } from '@/components/Timer';
 import { LeagueBadge } from '@/components/LeagueBadge';
 import { CountryFlag } from '@/components/CountryFlag';
+import { ReportButton } from '@/components/ReportButton';
 import { INSPECTION_DURATION_MS } from '@plus2/shared';
 
 // Rotation moves don't start the solve timer
@@ -553,6 +554,17 @@ export default function MatchPage() {
                   Leave
                 </button>
               </div>
+
+              {matchId && (
+                <div className="mt-6">
+                  <ReportButton
+                    reportedUserId={opponent.id}
+                    reportedUsername={opponent.username}
+                    contextType="match"
+                    matchId={matchId}
+                  />
+                </div>
+              )}
             </div>
           </div>
         )}

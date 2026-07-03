@@ -1781,6 +1781,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       raceId,
       puzzleSize,
       totalRounds: ghostSolves.length,
+      ghostUserId: ghostUser.id,
+      ghostSessionId: ghostSession.id,
       ghostUsername: ghostUser.username,
       ghostMmr: ghostSession.mmrAtRecording || 1000,
       isOldGhost,

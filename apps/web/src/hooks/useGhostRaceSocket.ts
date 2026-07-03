@@ -25,6 +25,8 @@ export interface GhostRaceState {
   inspectionStartsAt: number;
   solveStartsAt: number;
   // Ghost info
+  ghostUserId: string | null;
+  ghostSessionId: string | null;
   ghostUsername: string;
   ghostMmr: number;
   isOldGhost: boolean;
@@ -64,6 +66,8 @@ const initialState: GhostRaceState = {
   scramble: '',
   inspectionStartsAt: 0,
   solveStartsAt: 0,
+  ghostUserId: null,
+  ghostSessionId: null,
   ghostUsername: '',
   ghostMmr: 0,
   isOldGhost: false,
@@ -121,6 +125,8 @@ export function useGhostRaceSocket() {
       raceId: string;
       puzzleSize: PuzzleSize;
       totalRounds: number;
+      ghostUserId?: string;
+      ghostSessionId?: string;
       ghostUsername: string;
       ghostMmr: number;
       isOldGhost: boolean;
@@ -136,6 +142,8 @@ export function useGhostRaceSocket() {
         raceId: data.raceId,
         puzzleSize: data.puzzleSize,
         totalRounds: data.totalRounds,
+        ghostUserId: data.ghostUserId ?? null,
+        ghostSessionId: data.ghostSessionId ?? null,
         ghostUsername: data.ghostUsername,
         ghostMmr: data.ghostMmr,
         isOldGhost: data.isOldGhost,

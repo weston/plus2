@@ -145,6 +145,7 @@ export interface UserProfile {
   league: string;
   country?: string;
   wcaId?: string | null;
+  isAdmin?: boolean;
   createdAt: string;
   stats: Array<{
     id: string;
@@ -269,6 +270,41 @@ export const usersApi = {
     }>(`/users/${userId}/ghost-races?page=${page}`),
 };
 
+// Cheating reports
+export interface AdminReport {
+  id: string;
+  contextType: 'match' | 'ghost';
+  matchId: string | null;
+  ghostSessionId: string | null;
+  reason: string | null;
+  status: 'pending' | 'confirmed_cheating' | 'clean' | 'dismissed';
+  createdAt: string;
+  reportedUserId: string;
+  reportedUsername: string;
+  reportedMmr: number;
+  reporterId: string;
+  reporterUsername: string;
+}
+
+export const reportsApi = {
+  create: (
+    token: string,
+    body: {
+      reportedUserId: string;
+      contextType: 'match' | 'ghost';
+      matchId?: string;
+      ghostSessionId?: string;
+      reason?: string;
+    },
+  ) => request<{ id: string }>('/reports', { method: 'POST', token, body }),
+
+  adminList: (token: string, status?: string) =>
+    request<{ reports: AdminReport[] }>(`/reports/admin${status ? `?status=${status}` : ''}`, { token }),
+
+  review: (token: string, id: string, status: string) =>
+    request<{ id: string; status: string }>(`/reports/${id}`, { method: 'PATCH', token, body: { status } }),
+};
+
 // Keybindings API
 export const keybindingsApi = {
   getProfiles: (token: string) =>
@@ -328,6 +364,14 @@ export const leaderboardApi = {
       page: number;
       pageSize: number;
     }>(`/leaderboard?page=${page}&limit=${limit}`),
+
+  getShowcase: () =>
+    request<{
+      scramble: string;
+      timeMs: number;
+      username: string;
+      moves: Array<{ move: string; tMs: number }>;
+    } | null>('/leaderboard/showcase'),
 
   getByPuzzle: (puzzle: string, page = 1, limit = 50) =>
     request<{
