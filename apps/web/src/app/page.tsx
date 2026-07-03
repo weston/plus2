@@ -104,9 +104,7 @@ function HeroCube() {
         className="h-64 md:h-80"
       />
       <p className="text-center text-xs text-gray-500 mt-3">
-        {replay
-          ? `A real ${(replay.timeMs / 1000).toFixed(2)}s solve by ${replay.username} — you watch every turn, live.`
-          : "You see every turn of your opponent's cube, live."}
+        {replay ? `A real solve by ${replay.username}` : 'Live opponent view'}
       </p>
     </div>
   );
@@ -154,51 +152,18 @@ const ICONS: Record<string, JSX.Element> = {
 const FEATURES: Array<{ icon: string; title: string; body: string }> = [
   {
     icon: 'bolt',
-    title: 'Live 1v1 races',
-    body: "Best-of-5, same scramble, split screen. Your opponent's cube animates move by move while you solve — first to finish takes the round.",
+    title: 'Live races',
+    body: "Go head to head and watch your opponent's cube turn in real time.",
   },
   {
     icon: 'ghost',
     title: 'Ghost racing',
-    body: "Nobody queueing? Race a recording of a real player near your rating — their solve replays in real time. You'll never see the same scrambles twice.",
+    body: 'Nobody online? Race a recording of a real player at your level.',
   },
   {
     icon: 'trophy',
-    title: 'Ranked leagues',
-    body: 'ELO-style MMR from Bronze to Grandmaster. Every match and ghost race counts; the leaderboard only lists players who actually compete.',
-  },
-  {
-    icon: 'link',
-    title: 'Challenge friends',
-    body: 'Create a challenge, send the link, race the moment they click it. Rematch from the results screen and settle it properly.',
-  },
-  {
-    icon: 'chat',
-    title: 'Chat',
-    body: 'A global room for WCA-verified cubers, plus in-match chat with your opponent. Say gl hf, mean it.',
-  },
-  {
-    icon: 'chart',
-    title: 'Replays & progress',
-    body: 'Every solve is recorded move-for-move with true timing. Rewatch any match, and track your singles, ao5 and ao12 on your profile.',
-  },
-];
-
-const STEPS: Array<{ n: string; title: string; body: string }> = [
-  {
-    n: '1',
-    title: 'Learn the keys',
-    body: 'Solve on a keyboard-driven 3D cube — every face turn and rotation is a keystroke, fully rebindable.',
-  },
-  {
-    n: '2',
-    title: 'Find a race',
-    body: 'One button queues you against a live human near your rating — or an unseen ghost when nobody’s around.',
-  },
-  {
-    n: '3',
-    title: 'Climb',
-    body: 'Win rounds, take matches, earn MMR. Your league badge follows you everywhere on the site.',
+    title: 'Ranked',
+    body: 'Win races, climb from Bronze to Grandmaster.',
   },
 ];
 
@@ -247,8 +212,7 @@ export default function HomePage() {
             <span className="text-blue-500">head</span> to <span className="text-yellow-500">head</span>.
           </h1>
           <p className="text-lg text-gray-400 mb-8 max-w-md">
-            Race real opponents on a simulated Rubik&apos;s cube — live, ranked, and
-            move-for-move. Like chess online, but your rating is measured in seconds.
+            Like chess online, but your rating is measured in seconds.
           </p>
           <div className="flex flex-wrap gap-3 mb-6">
             <Link href={primaryCta.href} className="btn btn-primary text-lg px-7 py-3">
@@ -259,7 +223,7 @@ export default function HomePage() {
             </Link>
           </div>
           <p className="text-sm text-gray-500">
-            Free · keyboard-driven · WCA-style scrambles
+            Free · keyboard-driven
             {playerCount !== null && playerCount > 0 && (
               <> · {playerCount.toLocaleString()} ranked cuber{playerCount === 1 ? '' : 's'}</>
             )}
@@ -269,26 +233,8 @@ export default function HomePage() {
         <HeroCube />
       </section>
 
-      {/* How it works */}
-      <section className="max-w-6xl mx-auto px-6 pb-16">
-        <div className="grid md:grid-cols-3 gap-6">
-          {STEPS.map((s) => (
-            <div key={s.n} className="flex gap-4">
-              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-600/20 border border-blue-500 text-blue-400 flex items-center justify-center font-bold">
-                {s.n}
-              </div>
-              <div>
-                <h3 className="font-semibold mb-1">{s.title}</h3>
-                <p className="text-gray-400 text-sm">{s.body}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
       {/* Features */}
       <section className="max-w-6xl mx-auto px-6 pb-16">
-        <h2 className="text-3xl font-bold mb-8 text-center">Everything is a race</h2>
         <div className="grid md:grid-cols-3 gap-6">
           {FEATURES.map((f) => (
             <div key={f.title} className="card">
@@ -298,14 +244,13 @@ export default function HomePage() {
             </div>
           ))}
         </div>
+        <p className="text-center text-sm text-gray-500 mt-6">
+          Plus friend challenges, full replays, chat, and progress charts.
+        </p>
       </section>
 
       {/* League ladder */}
       <section className="max-w-6xl mx-auto px-6 pb-16 text-center">
-        <h2 className="text-3xl font-bold mb-3">Bronze to Grandmaster</h2>
-        <p className="text-gray-400 mb-6">
-          Seven leagues. One ladder. Your MMR decides where you stand.
-        </p>
         <div className="flex flex-wrap justify-center items-center gap-2">
           {LEAGUE_TIERS.map((tier, i) => (
             <span key={tier} className="flex items-center gap-2">
@@ -316,26 +261,8 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Puzzles + closing CTA */}
+      {/* Closing CTA */}
       <section className="max-w-6xl mx-auto px-6 pb-20 text-center">
-        <div className="flex justify-center gap-3 mb-10">
-          {(['2x2', '3x3', '4x4', '5x5'] as const).map((size) => {
-            const isAvailable = size === '3x3';
-            return (
-              <div
-                key={size}
-                className={`w-14 h-14 flex flex-col items-center justify-center rounded-lg border font-bold text-sm ${
-                  isAvailable
-                    ? 'bg-blue-600/20 border-blue-500 text-white'
-                    : 'bg-gray-800/50 border-gray-700 text-gray-500'
-                }`}
-              >
-                <span>{size}</span>
-                {!isAvailable && <span className="text-[9px] text-gray-600">Soon</span>}
-              </div>
-            );
-          })}
-        </div>
         <h2 className="text-2xl font-bold mb-4">The clock is running.</h2>
         <Link href={primaryCta.href} className="btn btn-primary text-lg px-8 py-3">
           {primaryCta.label}
