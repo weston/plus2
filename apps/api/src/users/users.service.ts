@@ -268,7 +268,15 @@ export class UsersService {
       }
     }
     const user = await this.findById(userId);
-    const merged = { ...user.preferences, ...preferences };
+    // The validated DTO instance carries ALL declared fields as own
+    // properties — absent ones as `undefined` (ES2022 class-field semantics).
+    // Spreading it raw clobbered every unsent setting: changing one color
+    // wiped animationSpeed, changing speed wiped colors. Only merge keys the
+    // client actually sent (null is a real value — e.g. cubeLogo removal).
+    const updates = Object.fromEntries(
+      Object.entries(preferences).filter(([, v]) => v !== undefined),
+    );
+    const merged = { ...user.preferences, ...updates };
     await this.userRepository.update(userId, { preferences: merged });
     return merged;
   }

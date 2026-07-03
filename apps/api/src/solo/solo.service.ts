@@ -621,9 +621,6 @@ export class SoloService {
     const valid = solves.filter((s) => s.scramble);
     if (valid.length === 0) return;
 
-    const user = await this.usersService.findById(userId).catch(() => null);
-    if (user?.preferences?.ghostOptOut) return; // user opted out of contributing ghosts
-
     const session = this.sessionRepository.create({
       userId,
       puzzleSize,

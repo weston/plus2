@@ -45,12 +45,16 @@ export default function SettingsPage() {
   const [message, setMessage] = useState('');
 
   // Appearance state
+  // Appearance controls stay locked until the server copy arrives — editing
+  // unhydrated defaults is how "change one color and everything else
+  // reverts" happened: the edit blocked hydration AND the next save wrote
+  // defaults over the user's real settings.
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
   const [cubeColors, setCubeColors] = useState<Record<string, string>>(DEFAULT_CUBE_COLORS);
   const [cubeLogo, setCubeLogo] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
   const [logoError, setLogoError] = useState('');
   const [animationSpeed, setAnimationSpeed] = useState(DEFAULT_ANIMATION_SPEED);
-  const [ghostOptOut, setGhostOptOut] = useState(false);
   const [isSavingPrefs, setIsSavingPrefs] = useState(false);
 
   // Account state
@@ -111,7 +115,7 @@ export default function SettingsPage() {
 
     usersApi.getPreferences(accessToken).then((prefs) => {
       // A slow GET must never clobber edits the user already made while it
-      // was in flight — only apply the server copy to untouched state.
+      // was in flight (controls are locked until loaded, but belt & braces).
       if (prefsDirtyRef.current) return;
       if (prefs.cubeColors) {
         const merged = { ...DEFAULT_CUBE_COLORS, ...prefs.cubeColors };
@@ -125,11 +129,10 @@ export default function SettingsPage() {
       if (prefs.animationSpeed !== undefined) {
         setAnimationSpeed(prefs.animationSpeed);
       }
-      if (prefs.ghostOptOut !== undefined) {
-        setGhostOptOut(prefs.ghostOptOut);
-      }
     }).catch(() => {
-      // Failed to load preferences, use defaults
+      // Failed to load — unlock with defaults rather than locking forever.
+    }).finally(() => {
+      setPrefsLoaded(true);
     });
 
     // Load user profile for country
@@ -202,12 +205,6 @@ export default function SettingsPage() {
     } catch (err) {
       setMessage('Failed to reset');
     }
-  };
-
-  // Save preferences to server
-  const handleGhostOptOutChange = (optOut: boolean) => {
-    setGhostOptOut(optOut);
-    savePreferences({ ghostOptOut: optOut });
   };
 
   // Debounced, single-flight, latest-wins preference saves. A color-picker
@@ -514,8 +511,13 @@ export default function SettingsPage() {
 
             <p className="text-gray-400 mb-6">
               Customize the colors of each face of the cube.
+              {!prefsLoaded && <span className="text-gray-500"> Loading your settings…</span>}
             </p>
 
+            {/* Everything below edits preferences — locked until the saved
+                copy has hydrated, so an early edit can't overwrite settings
+                that simply hadn't loaded yet. */}
+            <div className={prefsLoaded ? '' : 'pointer-events-none opacity-50'} aria-busy={!prefsLoaded}>
             {/* Live preview */}
             <div className="mb-6">
               <TwistyCube puzzleSize="3x3" scramble="" faceColors={cubeColors} logoUrl={cubeLogo} className="h-40" />
@@ -613,24 +615,6 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            {/* Ghost contribution */}
-            <div className="mt-8 pt-6 border-t border-gray-700">
-              <h2 className="text-xl font-semibold mb-4">Ghost Races</h2>
-              <label className="flex items-start gap-3 cursor-pointer bg-gray-800 p-4 rounded-lg">
-                <input
-                  type="checkbox"
-                  className="mt-1 accent-blue-500 w-4 h-4"
-                  checked={!ghostOptOut}
-                  onChange={(e) => handleGhostOptOutChange(!e.target.checked)}
-                />
-                <span>
-                  <span className="block font-medium">Contribute my solves as ghosts</span>
-                  <span className="block text-sm text-gray-400">
-                    When on, your ranked race solves can be raced by other players as ghost
-                    opponents. This helps everyone always have someone to race.
-                  </span>
-                </span>
-              </label>
             </div>
 
             {isSavingPrefs && (
