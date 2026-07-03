@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
+import { useCubePrefs } from '@/stores/cubePrefs';
 import { useGhostRaceSocket } from '@/hooks/useGhostRaceSocket';
 import { useKeybindings } from '@/hooks/useKeybindings';
 import { TwistyCube, TwistyCubeHandle } from '@/components/TwistyCube';
@@ -40,6 +41,7 @@ function GhostRaceContent() {
   const opponentId = searchParams.get('opponent');
   const { user, accessToken, _hasHydrated } = useAuthStore();
   const race = useGhostRaceSocket();
+  const myCubeColors = useCubePrefs((s) => s.colors);
 
   const [selectedSize, setSelectedSize] = useState<PuzzleSize>('3x3');
   const [inspectionTime, setInspectionTime] = useState(15);
@@ -637,6 +639,7 @@ function GhostRaceContent() {
                 scramble={race.scramble}
                 moves={moves}
                 onSolved={handleStopTimer}
+                faceColors={myCubeColors}
                 className="h-48 md:h-64"
               />
             </div>
@@ -656,6 +659,7 @@ function GhostRaceContent() {
                 puzzleSize={race.puzzleSize}
                 scramble={race.scramble}
                 moves={ghostMoves}
+                faceColors={race.ghostCubeColors}
                 className="h-48 md:h-64"
               />
             </div>

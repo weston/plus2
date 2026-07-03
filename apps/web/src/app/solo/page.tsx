@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
+import { useCubePrefs } from '@/stores/cubePrefs';
 import { useSoloSocket } from '@/hooks/useSoloSocket';
 import { useKeybindings } from '@/hooks/useKeybindings';
 import { TwistyCube, TwistyCubeHandle } from '@/components/TwistyCube';
@@ -38,6 +39,7 @@ function SoloContent() {
   const fromRace = searchParams.get('from') === 'race';
   const { user, accessToken, _hasHydrated } = useAuthStore();
   const solo = useSoloSocket();
+  const myCubeColors = useCubePrefs((s) => s.colors);
 
   const [selectedSize, setSelectedSize] = useState<PuzzleSize>('3x3');
   const [inspectionTime, setInspectionTime] = useState(15);
@@ -444,6 +446,7 @@ function SoloContent() {
               scramble={solo.scramble}
               moves={moves}
               onSolved={handleStopTimer}
+              faceColors={myCubeColors}
               className="h-64 md:h-96"
             />
           </div>

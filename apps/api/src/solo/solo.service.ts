@@ -435,7 +435,14 @@ export class SoloService {
     puzzleSize: PuzzleSize,
   ): Promise<{
     ghostSession: SoloSession;
-    ghostUser: { id: string; username: string; country: string | null; gamesPlayed: number; gamesWon: number };
+    ghostUser: {
+      id: string;
+      username: string;
+      country: string | null;
+      gamesPlayed: number;
+      gamesWon: number;
+      cubeColors?: Record<string, string> | null;
+    };
     isOldGhost: boolean;
   } | null> {
     // Get IDs of ghost sessions the racer has already played
@@ -504,6 +511,7 @@ export class SoloService {
         country: ghostUser.country || null,
         gamesPlayed: ghostStats?.gamesPlayed || 0,
         gamesWon: ghostStats?.gamesWon || 0,
+        cubeColors: ghostUser.preferences?.cubeColors ?? null,
       },
       isOldGhost,
     };
@@ -521,7 +529,14 @@ export class SoloService {
     puzzleSize: PuzzleSize,
   ): Promise<{
     ghostSession: SoloSession;
-    ghostUser: { id: string; username: string; country: string | null; gamesPlayed: number; gamesWon: number };
+    ghostUser: {
+      id: string;
+      username: string;
+      country: string | null;
+      gamesPlayed: number;
+      gamesWon: number;
+      cubeColors?: Record<string, string> | null;
+    };
     isOldGhost: boolean;
   } | null> {
     const userStats = await this.usersService.getPuzzleStats(userId, puzzleSize);
@@ -564,6 +579,7 @@ export class SoloService {
         country: ghostUser.country || null,
         gamesPlayed: ghostStats?.gamesPlayed || 0,
         gamesWon: ghostStats?.gamesWon || 0,
+        cubeColors: ghostUser.preferences?.cubeColors ?? null,
       },
       isOldGhost,
     };

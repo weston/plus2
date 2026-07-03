@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/stores/auth';
 import { useGameStore } from '@/stores/game';
 import { useChatStore } from '@/stores/chatroom';
+import { useCubePrefs } from '@/stores/cubePrefs';
 import { useSocket } from '@/hooks/useSocket';
 import { useKeybindings } from '@/hooks/useKeybindings';
 import { TwistyCube, TwistyCubeHandle } from '@/components/TwistyCube';
@@ -110,6 +111,7 @@ export default function MatchPage() {
 
   const { sendMove, sendSolveComplete, sendRematch, sendRequeue, sendMatchRejoin, sendMatchLeave, sendResign, sendMatchChat } = useSocket();
   const matchMessages = useChatStore((s) => s.matchMessages);
+  const myCubeColors = useCubePrefs((s) => s.colors);
   const [chatDraft, setChatDraft] = useState('');
   const chatListRef = useRef<HTMLDivElement>(null);
 
@@ -376,6 +378,7 @@ export default function MatchPage() {
               moves={myMoves}
               onSolved={completeSolve}
               isInteractive
+              faceColors={myCubeColors}
               className="h-64 mb-4"
             />
 
@@ -402,6 +405,10 @@ export default function MatchPage() {
                 {opponent.country && <CountryFlag country={opponent.country} size="md" />}
                 <span className="font-bold">{opponent.username}</span>
                 <LeagueBadge league={opponent.league} size="sm" />
+                {/* Matches are always vs a live human (ghosts race on /solo/race) */}
+                <span className="text-[10px] font-bold bg-red-600 text-white rounded px-1.5 py-0.5 animate-pulse">
+                  LIVE
+                </span>
               </div>
               <span className="text-gray-400">{opponent.mmr} MMR</span>
             </div>
@@ -421,6 +428,7 @@ export default function MatchPage() {
               puzzleSize={puzzleSize}
               scramble={scramble}
               moves={opponentMoves}
+              faceColors={opponent.cubeColors}
               className="h-64 mb-4"
             />
 

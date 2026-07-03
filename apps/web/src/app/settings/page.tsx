@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
+import { useCubePrefs } from '@/stores/cubePrefs';
+import { TwistyCube } from '@/components/TwistyCube';
 import { authApi, keybindingsApi, usersApi } from '@/lib/api';
 import { ALL_MOVES, DEFAULT_KEYBINDINGS } from '@plus2/shared';
 import { CountryFlag, COUNTRIES } from '@/components/CountryFlag';
@@ -106,7 +108,8 @@ export default function SettingsPage() {
 
     usersApi.getPreferences(accessToken).then((prefs) => {
       if (prefs.cubeColors) {
-        setCubeColors({ ...DEFAULT_CUBE_COLORS, ...prefs.cubeColors });
+        useCubePrefs.getState().setColors({ ...DEFAULT_CUBE_COLORS, ...(prefs.cubeColors || {}) });
+      setCubeColors({ ...DEFAULT_CUBE_COLORS, ...prefs.cubeColors });
       }
       if (prefs.animationSpeed !== undefined) {
         setAnimationSpeed(prefs.animationSpeed);
@@ -212,6 +215,7 @@ export default function SettingsPage() {
   const handleColorChange = (face: string, color: string) => {
     const newColors = { ...cubeColors, [face]: color };
     setCubeColors(newColors);
+    useCubePrefs.getState().setColors(newColors); // apply everywhere + localStorage
     savePreferences({ cubeColors: newColors });
   };
 
@@ -223,6 +227,7 @@ export default function SettingsPage() {
 
   const resetColorsToDefaults = () => {
     setCubeColors(DEFAULT_CUBE_COLORS);
+    useCubePrefs.getState().setColors(DEFAULT_CUBE_COLORS);
     savePreferences({ cubeColors: DEFAULT_CUBE_COLORS });
     setMessage('Colors reset to defaults');
     setTimeout(() => setMessage(''), 3000);
@@ -391,6 +396,11 @@ export default function SettingsPage() {
             <p className="text-gray-400 mb-6">
               Customize the colors of each face of the cube.
             </p>
+
+            {/* Live preview */}
+            <div className="mb-6">
+              <TwistyCube puzzleSize="3x3" scramble="" faceColors={cubeColors} className="h-40" />
+            </div>
 
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
               {Object.entries(cubeColors).map(([face, color]) => (

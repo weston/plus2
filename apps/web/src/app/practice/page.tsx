@@ -6,6 +6,7 @@ import { TwistyCube, TwistyCubeHandle } from '@/components/TwistyCube';
 import { Timer } from '@/components/Timer';
 import { useKeybindings } from '@/hooks/useKeybindings';
 import { useAuthStore } from '@/stores/auth';
+import { useCubePrefs } from '@/stores/cubePrefs';
 import { usersApi } from '@/lib/api';
 import type { PuzzleSize } from '@plus2/shared';
 import { INSPECTION_DURATION_MS, SCRAMBLE_LENGTHS } from '@plus2/shared';
@@ -87,6 +88,7 @@ function calculateAo12(times: SolveTime[]): number | null {
 const DEFAULT_ANIMATION_SPEED = 3;
 
 export default function PracticePage() {
+  const myCubeColors = useCubePrefs((st) => st.colors);
   const { user, accessToken } = useAuthStore();
   const [puzzleSize, setPuzzleSize] = useState<PuzzleSize>('3x3');
   const [phase, setPhase] = useState<PracticePhase>('idle');
@@ -396,6 +398,7 @@ export default function PracticePage() {
                     moves={moves}
                     onSolved={stopTimer}
                     animationSpeed={animationSpeed}
+                    faceColors={myCubeColors}
                     className="h-80 md:h-[500px]"
                   />
                 </div>

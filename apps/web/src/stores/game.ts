@@ -22,6 +22,8 @@ interface Opponent {
   country: string | null;
   gamesPlayed: number;
   gamesWon: number;
+  // The opponent's cube color scheme — their cube renders in THEIR colors.
+  cubeColors?: Record<string, string> | null;
 }
 
 // Queued opponent move for deterministic replay. Moves apply strictly in

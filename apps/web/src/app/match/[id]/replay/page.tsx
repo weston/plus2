@@ -389,6 +389,7 @@ export default function ReplayPage() {
               scramble={currentSolve?.scramble || ''}
               moves={p1Moves}
               animationSpeed={isPlaying ? 5 : 3}
+              faceColors={match.player1.cubeColors}
               className="h-64 md:h-80"
             />
 
@@ -427,6 +428,7 @@ export default function ReplayPage() {
               scramble={currentSolve?.scramble || ''}
               moves={p2Moves}
               animationSpeed={isPlaying ? 5 : 3}
+              faceColors={match.player2.cubeColors}
               className="h-64 md:h-80"
             />
 

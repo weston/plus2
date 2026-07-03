@@ -16,6 +16,9 @@ interface TwistyCubeProps {
   onMove?: (move: string) => void;
   onSolved?: () => void; // fired when a move leaves the cube solved (auto-stop timer)
   animationSpeed?: number; // higher = faster
+  // Per-face hex colors keyed by U/D/F/B/R/L; omitted faces fall back to the
+  // WCA defaults. The cube rebuilds when these change.
+  faceColors?: Record<string, string> | null;
   className?: string;
 }
 
@@ -39,6 +42,21 @@ declare global {
 }
 
 const SIZE_MAP: Record<PuzzleSize, number> = { '2x2': 2, '3x3': 3, '4x4': 4, '5x5': 5 };
+
+// csTimer's twisty faceColors array order (see twistynnn.js defaults:
+// white, red, green, yellow, orange, blue = U, R, F, D, L, B).
+const FACE_ORDER = ['U', 'R', 'F', 'D', 'L', 'B'] as const;
+const DEFAULT_FACE_HEX: Record<string, number> = {
+  U: 0xffffff, R: 0xff0000, F: 0x00ff00, D: 0xffff00, L: 0xff9000, B: 0x0000ff,
+};
+
+function toFaceColorArray(colors?: Record<string, string> | null): number[] {
+  return FACE_ORDER.map((face) => {
+    const hex = colors?.[face];
+    if (hex && /^#[0-9a-fA-F]{6}$/.test(hex)) return parseInt(hex.slice(1), 16);
+    return DEFAULT_FACE_HEX[face];
+  });
+}
 
 // Vendored csTimer renderer scripts (GPL-3.0 — see public/cstimer/NOTICE).
 // Order matters: libs, then twisty, then the cube plugin, then our glue.
@@ -98,7 +116,7 @@ function speedToVrc(speed: number): number {
 }
 
 export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function TwistyCube(
-  { puzzleSize, scramble = '', moves = [], onSolved, animationSpeed = 3, className = '' },
+  { puzzleSize, scramble = '', moves = [], onSolved, animationSpeed = 3, faceColors, className = '' },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -110,6 +128,8 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
 
   const N = SIZE_MAP[puzzleSize] ?? 3;
   const movesSig = moves.join(' ');
+  const colorArray = toFaceColorArray(faceColors);
+  const colorsSig = colorArray.join(',');
 
   useEffect(() => {
     speedRef.current = animationSpeed;
@@ -131,6 +151,7 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
           speed: speedToVrc(speedRef.current),
           ori: ORI,
           fit: FIT,
+          faceColors: colorArray,
           onSolved: () => onSolvedRef.current?.(),
         });
         // Center the square canvas within the container.
@@ -160,7 +181,7 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
       if (container) container.innerHTML = '';
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [puzzleSize, scramble]);
+  }, [puzzleSize, scramble, colorsSig]);
 
   // React to the declarative `moves` prop (opponent / replay / ghost).
   useEffect(() => {

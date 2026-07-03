@@ -322,6 +322,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
             username: opponentUser.username,
             mmr: opponentUser.mmr,
             league: opponentUser.league,
+            cubeColors: opponentUser.preferences?.cubeColors ?? null,
           },
           puzzleSize: match.puzzleSize,
           // Current score from this player's perspective so a mid-match
@@ -1649,7 +1650,14 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
           solveStartAt?: Date;
         }>;
       };
-      ghostUser: { id: string; username: string; country: string | null; gamesPlayed: number; gamesWon: number };
+      ghostUser: {
+        id: string;
+        username: string;
+        country: string | null;
+        gamesPlayed: number;
+        gamesWon: number;
+        cubeColors?: Record<string, string> | null;
+      };
       isOldGhost: boolean;
       isSeed?: boolean;
     },
@@ -1701,6 +1709,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       ghostCountry: ghostUser.country,
       ghostGamesPlayed: ghostUser.gamesPlayed,
       ghostGamesWon: ghostUser.gamesWon,
+      // The ghost renders in its owner's colors on the racer's screen.
+      ghostCubeColors: ghostUser.cubeColors ?? null,
     });
 
     setTimeout(() => this.startGhostRaceRound(raceId), 2000);
@@ -1998,6 +2008,12 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       currentRound: 0,
     });
 
+    // Each player's cube colors travel to the OPPONENT's screen.
+    const [p1User, p2User] = await Promise.all([
+      this.usersService.findById(player1.userId).catch(() => null),
+      this.usersService.findById(player2.userId).catch(() => null),
+    ]);
+
     // Notify players with extended opponent info
     p1Socket.emit('match_found', {
       matchId: match.id,
@@ -2009,6 +2025,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         country: player2.country,
         gamesPlayed: player2.gamesPlayed,
         gamesWon: player2.gamesWon,
+        cubeColors: p2User?.preferences?.cubeColors ?? null,
       },
       puzzleSize,
     });
@@ -2023,6 +2040,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         country: player1.country,
         gamesPlayed: player1.gamesPlayed,
         gamesWon: player1.gamesWon,
+        cubeColors: p1User?.preferences?.cubeColors ?? null,
       },
       puzzleSize,
     });

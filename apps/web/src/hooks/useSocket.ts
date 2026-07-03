@@ -158,6 +158,7 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
       country?: string | null;
       gamesPlayed?: number;
       gamesWon?: number;
+      cubeColors?: Record<string, string> | null;
     };
     scores?: { you: number; opponent: number };
   }) => {
@@ -174,6 +175,7 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
         country: data.opponent.country || null,
         gamesPlayed: data.opponent.gamesPlayed || 0,
         gamesWon: data.opponent.gamesWon || 0,
+        cubeColors: data.opponent.cubeColors ?? null,
       },
       data.scores,
     );

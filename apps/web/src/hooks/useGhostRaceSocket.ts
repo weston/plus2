@@ -36,6 +36,7 @@ export interface GhostRaceState {
   ghostCountry: string | null;
   ghostGamesPlayed: number;
   ghostGamesWon: number;
+  ghostCubeColors: Record<string, string> | null;
   // Round results
   lastUserTime: number | null;
   lastGhostTime: number | null;
@@ -73,6 +74,7 @@ const initialState: GhostRaceState = {
   ghostCountry: null,
   ghostGamesPlayed: 0,
   ghostGamesWon: 0,
+  ghostCubeColors: null,
   lastUserTime: null,
   lastGhostTime: null,
   lastUserWonRound: null,
@@ -123,6 +125,7 @@ export function useGhostRaceSocket() {
       ghostCountry?: string | null;
       ghostGamesPlayed?: number;
       ghostGamesWon?: number;
+      ghostCubeColors?: Record<string, string> | null;
     }) => {
       setState((prev) => ({
         ...prev,
@@ -136,6 +139,7 @@ export function useGhostRaceSocket() {
         ghostCountry: data.ghostCountry || null,
         ghostGamesPlayed: data.ghostGamesPlayed || 0,
         ghostGamesWon: data.ghostGamesWon || 0,
+        ghostCubeColors: data.ghostCubeColors ?? null,
         userWins: 0,
         ghostWins: 0,
         error: null,

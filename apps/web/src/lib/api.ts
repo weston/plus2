@@ -362,8 +362,8 @@ export interface MatchSolve {
 export interface MatchDetail {
   id: string;
   puzzleSize: string;
-  player1: { id: string; username: string; mmr: number; league: string };
-  player2: { id: string; username: string; mmr: number; league: string };
+  player1: { id: string; username: string; mmr: number; league: string; cubeColors?: Record<string, string> | null };
+  player2: { id: string; username: string; mmr: number; league: string; cubeColors?: Record<string, string> | null };
   player1Score: number;
   player2Score: number;
   player1MmrBefore: number;

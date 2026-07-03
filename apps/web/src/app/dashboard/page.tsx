@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
 import { useGameStore } from '@/stores/game';
 import { useChatStore } from '@/stores/chatroom';
+import { useCubePrefs } from '@/stores/cubePrefs';
 import { useSocket } from '@/hooks/useSocket';
 import { CountryFlag } from '@/components/CountryFlag';
 import { LeagueBadge } from '@/components/LeagueBadge';
@@ -141,6 +142,12 @@ export default function DashboardPage() {
       // Ghost races API might not be available
       setGhostRaces([]);
     });
+
+    // Hydrate the local cube-color theme from the server copy (covers a
+    // fresh browser with empty localStorage).
+    usersApi.getPreferences(accessToken).then((prefs) => {
+      if (prefs.cubeColors) useCubePrefs.getState().setColors(prefs.cubeColors);
+    }).catch(() => {});
   }, [accessToken]);
 
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

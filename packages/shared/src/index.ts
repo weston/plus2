@@ -237,6 +237,8 @@ export interface ServerEvents {
       username: string;
       mmr: number;
       league: LeagueTier;
+      // The opponent's cube color scheme (renders THEIR cube in THEIR colors)
+      cubeColors?: Record<string, string> | null;
     };
     puzzleSize: PuzzleSize;
     // Present on reconnect resyncs: the current score from the receiving
