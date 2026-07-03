@@ -96,8 +96,12 @@ function performClockSync(socket: Socket) {
 
 function registerHandlers(socket: Socket, shared: SharedSocket) {
   socket.on('connect', () => {
-    // Perform initial clock sync, then keep it fresh periodically
+    // Take a quick burst of clock-sync samples so the median offset settles
+    // fast (a single bad first sample used to skew replay pacing), then keep
+    // it fresh periodically.
     performClockSync(socket);
+    setTimeout(() => socket.connected && performClockSync(socket), 400);
+    setTimeout(() => socket.connected && performClockSync(socket), 1000);
     if (shared.clockSyncInterval) clearInterval(shared.clockSyncInterval);
     shared.clockSyncInterval = setInterval(() => {
       performClockSync(socket);
@@ -177,11 +181,21 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
     const game = useGameStore.getState();
     // Clear any scheduled moves from previous round
     game.clearScheduledMoves();
-    // Use local client time for timer display, but also track server timestamps
+    // Timer display uses local client time. Live rounds start "now"; on a
+    // mid-round rejoin the server's inspection start is well in the past —
+    // map it to local time so the countdown shows the REAL remaining
+    // inspection instead of restarting at 15s.
+    let localInspectionStart = Date.now();
+    if (data.inspectionStartServerMs) {
+      const mapped = data.inspectionStartServerMs - game.serverOffsetMs;
+      if (mapped < localInspectionStart - 1000) {
+        localInspectionStart = mapped;
+      }
+    }
     game.startRound(
       data.round,
       data.scramble,
-      Date.now(),
+      localInspectionStart,
       data.solveId,
       data.inspectionStartServerMs,
       data.inspectionEndServerMs
@@ -257,20 +271,18 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
     game.setOpponentDone(data.timeMs);
   });
 
-  // Receive authoritative time for my own solve (so both players see the same value)
-  socket.on('my_solve_time', (data: { timeMs: number }) => {
+  // Receive authoritative time for my own solve (so both players see the same
+  // value). null = the solve was a DNF.
+  socket.on('my_solve_time', (data: { timeMs: number | null }) => {
     useGameStore.getState().setSolveComplete(data.timeMs);
   });
 
   socket.on('solve_result', (data: ServerEvents['solve_result']) => {
-    // Use the authoritative times from solve_result for both players
+    // Use the authoritative times from solve_result for both players.
+    // null times are DNFs — still terminal, so set them unconditionally.
     const game = useGameStore.getState();
-    if (data.yourTime !== null) {
-      game.setSolveComplete(data.yourTime);
-    }
-    if (data.opponentTime !== null) {
-      game.setOpponentDone(data.opponentTime);
-    }
+    game.setSolveComplete(data.yourTime);
+    game.setOpponentDone(data.opponentTime);
     game.setRoundResult(data.winner as 'you' | 'opponent' | 'draw', data.scores);
   });
 
@@ -286,6 +298,17 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
   });
 
   socket.on('opponent_disconnect', () => {});
+
+  // Another of this user's tabs took over the match — this tab's socket was
+  // detached. Reset local match state so a stale /match page redirects away
+  // instead of showing a frozen game.
+  socket.on('match_detached', (data: { matchId: string }) => {
+    const game = useGameStore.getState();
+    if (game.matchId === data.matchId) {
+      console.log('[SYNC] Match taken over by another tab — detaching this one');
+      game.reset();
+    }
+  });
 
   // Challenge events
   socket.on('challenge_created', (data: { code: string; puzzleSize: PuzzleSize }) => {

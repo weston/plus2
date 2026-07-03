@@ -34,13 +34,18 @@ function formatTime(ms: number): string {
 
 // Hook for deterministic opponent timer display
 function useOpponentTimerDisplay() {
-  const { opponentLocalSolveStartPerf, opponentTime, opponentSolveReceivedAt } = useGameStore();
+  const { opponentLocalSolveStartPerf, opponentTime, opponentSolveReceivedAt, opponentDone } = useGameStore();
   const [displayTime, setDisplayTime] = useState<number>(0);
 
   useEffect(() => {
     // If we have final time, show it
     if (opponentTime !== null) {
       setDisplayTime(opponentTime);
+      return;
+    }
+
+    // Done with no time = DNF — stop ticking (rendering handled by caller)
+    if (opponentDone) {
       return;
     }
 
@@ -58,11 +63,11 @@ function useOpponentTimerDisplay() {
     }, 10);
 
     return () => clearInterval(interval);
-  }, [opponentLocalSolveStartPerf, opponentTime]);
+  }, [opponentLocalSolveStartPerf, opponentTime, opponentDone]);
 
   return {
     displayTime,
-    isRunning: opponentLocalSolveStartPerf !== null && opponentTime === null,
+    isRunning: opponentLocalSolveStartPerf !== null && opponentTime === null && !opponentDone,
     // Fallback: use legacy field if deterministic isn't set
     hasStarted: opponentLocalSolveStartPerf !== null || opponentSolveReceivedAt !== null,
   };
@@ -87,6 +92,7 @@ export default function MatchPage() {
     opponentMoves,
     myTime,
     opponentTime,
+    opponentDone,
     opponentSolveReceivedAt, // Local time when we received opponent_started
     opponentLocalSolveStartPerf, // Deterministic opponent solve start
     matchWinner,
@@ -170,8 +176,19 @@ export default function MatchPage() {
       solveStartedRef.current = true;
       const nowPerf = performance.now();
       const nowDate = Date.now();
-      // Always use client's local time for timer display (server calculates final time)
-      setMyTimerStart(nowDate);
+      // Timer display uses local time. On a mid-solve REJOIN the server's
+      // authoritative solve start is well in the past — map it to local time
+      // so the timer continues from the real elapsed instead of restarting
+      // at 0. Live starts keep using "now" (mapping noise would skew them).
+      const { mySolveStartServerMs: solveStartSrv, serverOffsetMs } = useGameStore.getState();
+      let timerStart = nowDate;
+      if (solveStartSrv) {
+        const mapped = solveStartSrv - serverOffsetMs;
+        if (mapped < nowDate - 2000) {
+          timerStart = mapped;
+        }
+      }
+      setMyTimerStart(timerStart);
       setMyTimerRunning(true);
       // Set local solve start perf for tMs calculation (if not already set by a move)
       if (myLocalSolveStartPerf === null) {
@@ -356,15 +373,17 @@ export default function MatchPage() {
             <div className="text-center">
               {/* Use deterministic timer display for opponent */}
               <div className="timer text-6xl font-bold text-white">
-                {opponentTimer.isRunning || opponentTime !== null
-                  ? formatTime(opponentTime ?? opponentTimer.displayTime)
-                  : '0.00'}
+                {opponentDone && opponentTime === null
+                  ? 'DNF'
+                  : opponentTimer.isRunning || opponentTime !== null
+                    ? formatTime(opponentTime ?? opponentTimer.displayTime)
+                    : '0.00'}
               </div>
               <p className="text-gray-400 mt-2">
                 {!opponentTimer.hasStarted && phase === 'inspecting' && 'Inspecting...'}
                 {!opponentTimer.hasStarted && phase === 'solving' && 'Inspecting...'}
-                {opponentTimer.hasStarted && !opponentTime && 'Solving...'}
-                {opponentTime && 'Done!'}
+                {opponentTimer.hasStarted && !opponentDone && !opponentTime && 'Solving...'}
+                {opponentDone && (opponentTime !== null ? 'Done!' : 'DNF')}
               </p>
             </div>
           </div>
@@ -378,7 +397,11 @@ export default function MatchPage() {
                 ? myTime < opponentTime
                   ? 'You Win This Round!'
                   : 'Opponent Wins This Round'
-                : 'Round Complete'}
+                : myTime
+                  ? 'You Win This Round!'
+                  : opponentTime
+                    ? 'Opponent Wins This Round'
+                    : 'Round Complete'}
             </h2>
             <p className="text-gray-400">
               Your time: {myTime ? `${(myTime / 1000).toFixed(2)}s` : 'DNF'}

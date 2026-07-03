@@ -1,0 +1,63 @@
+plus2 — known bugs / issues to fix
+==================================
+
+FIXED (2026-07-02 bugfix batch)
+- [x] Realtime replay from profiles: ghost playback ("Race Ghost") scheduled moves
+      by a tMs field that match-derived ghosts and older solo recordings don't have
+      (and one fallback compared a number against an ISO date string = NaN, so the
+      ghost cube never moved). New ghost snapshots are normalized to inspection-
+      relative tMs at write time; the replay reader now understands every
+      historical shape. The /match/[id]/replay page also plays with the REAL
+      recorded timing now instead of a fixed 500ms lockstep.
+- [x] Mysterious leaderboard users: the leaderboard listed every account ever
+      created (sign-in-only visitors, test accounts) at the default 1000 MMR.
+      Global + per-puzzle boards and rank calculations now require >= 1 played game.
+- [x] Space with an unsolved cube in a PvP match recorded a COMPLETED solve with a
+      server-computed time. Now records a proper DNF (null time), the opponent is
+      notified, DNF renders as "DNF", and a completed solve beats a DNF.
+- [x] Ghost race instant-stop exploit: stopping the timer with an unsolved cube
+      recorded a (tiny) time and could beat the ghost. Now records a DNF.
+- [x] Solve times were fully client-authoritative (trivially spoofable). Matches
+      and solo recordings now clamp reported times to the server-observed solve
+      window (start = first face move receipt) with a 5s tolerance, logged as
+      [ANTICHEAT].
+- [x] Zombie match after leave + network blip: a reconnect used to auto-reattach a
+      player who had deliberately left, cancelling the forfeit timer. Deliberate
+      leaves are now tracked per player; only returning to the match page
+      (match_rejoin) re-attaches.
+- [x] Two tabs on /match: the replaced tab now gets match_detached, resets, and
+      redirects instead of showing a frozen game.
+- [x] Rejoining a match mid-round restarted the solve timer display at 0 and the
+      inspection countdown at 15s — both now continue from the server-authoritative
+      time.
+- [x] Clock sync now takes a quick 3-sample burst on connect so a bad first sample
+      can't skew replay pacing.
+- [x] deploy.sh pushes a git-SHA image tag alongside :latest for rollback.
+- [x] Solo "create ghost solves" DNF handling: audited — was already correct
+      (client sends isDnf, server stores status dnf with null time).
+
+Still open
+- Prod DB cleanup: test accounts WITH played games still appear on the leaderboard
+  (the filter only hides zero-game accounts). Pruning specific accounts is a
+  data/product decision — list candidates and delete deliberately.
+- Profile "Match History" ghost-race rows have no replay/view link at all (PvP
+  rows have "View"); adding one is tracked as a feature.
+
+Edge cases accepted for now
+- Old clients (stale open tabs from before the shared-socket deploy) can still hit
+  the orphan-forfeit race on an unlucky reconnect ordering; new clients are immune.
+  Goes away as stale tabs die off.
+- If the challenge creator's socket drops in the instant their friend joins, the
+  join fails with "creator offline" and the challenge is deleted (friend must ask
+  for a new code).
+- Opponent replay pacing depends on the NTP-lite offset estimate; ordering is
+  guaranteed, pacing is best-effort (mitigated by the sync burst).
+- Ghost replay for legacy recordings without timing data falls back to anchored/
+  even spacing — old data simply lacks real timestamps.
+
+Tech debt with bug potential
+- better-sqlite3 (dev) vs postgres (prod) behave differently (simple-json columns,
+  blocking queries); prod-only issues won't reproduce locally.
+- solo/ghost pages still use their own per-page sockets (not the shared singleton);
+  navigating away mid solo session abandons it via disconnect — intended today, but
+  it's a second socket lifecycle to keep in mind when touching the gateway.

@@ -38,6 +38,8 @@ export default function ReplayPage() {
   const [p2MoveIndex, setP2MoveIndex] = useState(0);
 
   const playbackRef = useRef<NodeJS.Timeout | null>(null);
+  // Playback position in recorded-timeline ms (advanced while playing).
+  const playheadRef = useRef(0);
 
   useEffect(() => {
     async function loadMatch() {
@@ -70,33 +72,71 @@ export default function ReplayPage() {
     setP1MoveIndex(0);
     setP2MoveIndex(0);
     setIsPlaying(false);
+    playheadRef.current = 0;
     if (playbackRef.current) {
       clearInterval(playbackRef.current);
     }
   }, [selectedRound]);
 
-  // Playback logic
+  // Recorded timeline: when each move happened, in ms relative to a shared
+  // anchor (the round's first recorded move across both players), so the
+  // replay plays back with the REAL timing and the two players stay aligned
+  // in time — not the old fixed 500ms lockstep, which was neither realtime
+  // nor a fair race view.
+  const moveTimes = (() => {
+    const p1 = currentSolve?.p1Moves || [];
+    const p2 = currentSolve?.p2Moves || [];
+    const firstAbs = (ms: typeof p1) => {
+      const f = ms.find((m) => typeof m.clientTs === 'number' && m.clientTs > 1e10);
+      return f ? f.clientTs : null;
+    };
+    const a1 = firstAbs(p1);
+    const a2 = firstAbs(p2);
+    const anchor = a1 !== null && a2 !== null ? Math.min(a1, a2) : a1 ?? a2;
+    const normalize = (ms: typeof p1) =>
+      ms.map((m, i) => {
+        const t =
+          typeof (m as { tMs?: number }).tMs === 'number'
+            ? (m as { tMs?: number }).tMs!
+            : typeof m.clientTs === 'number' && m.clientTs <= 1e10
+              ? m.clientTs
+              : typeof m.clientTs === 'number' && anchor !== null
+                ? m.clientTs - anchor
+                : i * 500;
+        return Number.isFinite(t) ? Math.max(0, t) : i * 500;
+      });
+    return { p1: normalize(p1), p2: normalize(p2) };
+  })();
+
+  // Playback logic: advance the playhead through the recorded timeline.
   useEffect(() => {
     if (!isPlaying || !currentSolve) return;
 
-    const baseInterval = 500 / speed; // Base 500ms per move
-
+    let last = Date.now();
     playbackRef.current = setInterval(() => {
+      const now = Date.now();
+      playheadRef.current += (now - last) * speed;
+      last = now;
+      const t = playheadRef.current;
+
       setP1MoveIndex((prev) => {
-        if (prev < maxP1Moves) return prev + 1;
-        return prev;
+        let i = prev;
+        while (i < maxP1Moves && moveTimes.p1[i] <= t) i++;
+        return i;
       });
       setP2MoveIndex((prev) => {
-        if (prev < maxP2Moves) return prev + 1;
-        return prev;
+        let i = prev;
+        while (i < maxP2Moves && moveTimes.p2[i] <= t) i++;
+        return i;
       });
-    }, baseInterval);
+    }, 50);
 
     return () => {
       if (playbackRef.current) {
         clearInterval(playbackRef.current);
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying, speed, currentSolve, maxP1Moves, maxP2Moves]);
 
   // Stop when both players are done
@@ -111,6 +151,14 @@ export default function ReplayPage() {
       // Reset if at end
       setP1MoveIndex(0);
       setP2MoveIndex(0);
+      playheadRef.current = 0;
+    } else if (!isPlaying) {
+      // Resuming (possibly after manual stepping): put the playhead at the
+      // last already-shown move so playback continues from here.
+      playheadRef.current = Math.max(
+        p1MoveIndex > 0 ? moveTimes.p1[p1MoveIndex - 1] : 0,
+        p2MoveIndex > 0 ? moveTimes.p2[p2MoveIndex - 1] : 0,
+      );
     }
     setIsPlaying(!isPlaying);
   };

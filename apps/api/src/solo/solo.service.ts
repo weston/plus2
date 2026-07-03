@@ -520,7 +520,14 @@ export class SoloService {
     userId: string,
     puzzleSize: PuzzleSize,
     mmr: number,
-    solves: Array<{ roundNumber: number; scramble: string; timeMs: number | null; moves: MoveRecord[] }>,
+    solves: Array<{
+      roundNumber: number;
+      scramble: string;
+      timeMs: number | null;
+      moves: MoveRecord[];
+      inspectionStartAt?: Date | null;
+      solveStartAt?: Date | null;
+    }>,
   ): Promise<void> {
     const valid = solves.filter((s) => s.scramble);
     if (valid.length === 0) return;
@@ -540,17 +547,40 @@ export class SoloService {
     });
     await this.sessionRepository.save(session);
 
-    const entities = valid.map((s) =>
-      this.solveRepository.create({
+    // Dates can arrive as Date objects or (from some drivers) strings.
+    const toMs = (v: unknown): number | null => {
+      if (v == null) return null;
+      if (typeof v === 'number') return v;
+      const t = new Date(v as string | Date).getTime();
+      return Number.isNaN(t) ? null : t;
+    };
+
+    const entities = valid.map((s) => {
+      const inspMs = toMs(s.inspectionStartAt);
+      // Normalize per-move timing to inspection-relative tMs — the field the
+      // ghost replay actually plays back. Match-recorded moves only carry an
+      // ABSOLUTE clientTs (solveStart + offset); without this conversion a
+      // ghost snapshotted from a ranked match replays with fabricated timing.
+      const moves = (s.moves || []).map((m) => {
+        if (typeof m.tMs === 'number') return m;
+        if (typeof m.clientTs === 'number' && m.clientTs > 1e10 && inspMs != null) {
+          return { ...m, tMs: Math.max(0, m.clientTs - inspMs) };
+        }
+        return m;
+      });
+
+      return this.solveRepository.create({
         sessionId: session.id,
         roundNumber: s.roundNumber,
         scramble: s.scramble,
         status: s.timeMs != null ? 'completed' : 'dnf',
         timeMs: s.timeMs ?? null,
-        moves: s.moves || [],
-        moveCount: (s.moves || []).length,
-      }),
-    );
+        moves,
+        moveCount: moves.length,
+        inspectionStartAt: s.inspectionStartAt ?? undefined,
+        solveStartAt: s.solveStartAt ?? undefined,
+      });
+    });
     await this.solveRepository.save(entities);
   }
 

@@ -56,7 +56,8 @@ interface GameState {
   myMoves: string[];
   opponentMoves: string[];
   myTime: number | null;
-  opponentTime: number | null;
+  opponentTime: number | null; // null = still solving, or a DNF once opponentDone
+  opponentDone: boolean;
 
   // Clock synchronization (NTP-lite)
   serverOffsetMs: number; // Date.now() + serverOffsetMs ≈ server time
@@ -100,7 +101,7 @@ interface GameState {
   addMyMove: (move: string) => void;
   addOpponentMove: (move: string) => void;
   setSolveComplete: (myTime: number | null) => void;
-  setOpponentDone: (opponentTime: number) => void;
+  setOpponentDone: (opponentTime: number | null) => void;
   setOpponentStarted: (clientTs: number) => void;
   setOpponentMoveTs: (clientTs: number) => void;
   setRoundResult: (winner: 'you' | 'opponent' | 'draw', scores: { you: number; opponent: number }) => void;
@@ -137,6 +138,7 @@ const initialState = {
   opponentMoves: [] as string[],
   myTime: null as number | null,
   opponentTime: null as number | null,
+  opponentDone: false,
 
   // Clock sync
   serverOffsetMs: 0,
@@ -239,6 +241,7 @@ export const useGameStore = create<GameState>((set, get) => {
       opponentMoves: [],
       myTime: null,
       opponentTime: null,
+      opponentDone: false,
       // Deterministic timeline
       solveId: solveId || null,
       inspectionStartServerMs: inspectionStartServerMs || null,
@@ -267,8 +270,9 @@ export const useGameStore = create<GameState>((set, get) => {
   setSolveComplete: (myTime) =>
     set({ phase: 'waiting_opponent', myTime }),
 
+  // opponentTime === null with opponentDone means the opponent DNF'd.
   setOpponentDone: (opponentTime) =>
-    set({ opponentTime }),
+    set({ opponentTime, opponentDone: true }),
 
   setOpponentStarted: (clientTs) =>
     set({

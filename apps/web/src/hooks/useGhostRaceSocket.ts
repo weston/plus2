@@ -255,9 +255,9 @@ export function useGhostRaceSocket() {
     }
   }, []);
 
-  const sendComplete = useCallback(() => {
+  const sendComplete = useCallback((isDnf: boolean = false) => {
     if (socketRef.current) {
-      socketRef.current.emit('ghost_race_complete', {});
+      socketRef.current.emit('ghost_race_complete', { isDnf });
     }
   }, []);
 

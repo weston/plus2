@@ -88,7 +88,23 @@ function GhostRaceContent() {
     if (ghostReplayRef.current) return; // Already running
 
     let moveIndex = 0;
-    const ghostInspectionStart = race.ghostInspectionStartAt;
+    // Historical recordings can carry the anchor as a Date-serialized ISO
+    // string — coerce to a number or every comparison below becomes NaN and
+    // the ghost cube never moves.
+    const toMs = (v: unknown): number => {
+      if (typeof v === 'number') return v;
+      if (!v) return 0;
+      const t = new Date(v as string).getTime();
+      return Number.isNaN(t) ? 0 : t;
+    };
+    const ghostInspectionStart = toMs(race.ghostInspectionStartAt);
+    // Anchor for legacy match-derived recordings whose moves only carry
+    // ABSOLUTE clientTs timestamps: play the first move at the 15s mark and
+    // preserve the real spacing between moves.
+    const firstAbsolute = race.ghostMoves.find(
+      (m) => typeof m.clientTs === 'number' && m.clientTs > 1e10,
+    );
+    const firstAbsoluteClientTs = firstAbsolute ? (firstAbsolute.clientTs as number) : null;
 
     ghostReplayRef.current = setInterval(() => {
       // Calculate elapsed time since our inspection started
@@ -98,16 +114,27 @@ function GhostRaceContent() {
       while (moveIndex < race.ghostMoves.length) {
         const move = race.ghostMoves[moveIndex];
 
-        // Calculate when this move should play relative to inspection start
+        // Resolve when this move plays, relative to inspection start.
+        // Recordings exist in several historical shapes:
+        //  - tMs: inspection-relative (current format)
+        //  - small clientTs: already relative (older solo recordings)
+        //  - absolute clientTs: match-derived ghosts — anchor at 15s with
+        //    true inter-move spacing
+        //  - serverTs vs. inspection anchor: oldest fallback
         let moveTime: number;
-        if (move.tMs !== undefined) {
-          // tMs is now relative to inspection start - use directly
+        if (typeof move.tMs === 'number') {
           moveTime = move.tMs;
+        } else if (typeof move.clientTs === 'number' && move.clientTs <= 1e10) {
+          moveTime = move.clientTs;
+        } else if (typeof move.clientTs === 'number' && firstAbsoluteClientTs !== null) {
+          moveTime = 15000 + (move.clientTs - firstAbsoluteClientTs);
         } else if (move.serverTs && ghostInspectionStart) {
-          // Legacy: use serverTs relative to ghost's inspection start
-          moveTime = move.serverTs - ghostInspectionStart;
+          moveTime = toMs(move.serverTs) - ghostInspectionStart;
         } else {
           // Fallback: spread moves evenly starting at 15s
+          moveTime = 15000 + (moveIndex * 200);
+        }
+        if (!Number.isFinite(moveTime)) {
           moveTime = 15000 + (moveIndex * 200);
         }
 
@@ -284,14 +311,9 @@ function GhostRaceContent() {
       setWaitingForGhost(true);
     }
 
-    // Check if cube is solved
+    // Check if cube is solved — stopping on an unsolved cube is a DNF.
     const isSolved = await cubeRef.current?.checkSolved() ?? false;
-
-    if (isSolved) {
-      race.sendComplete();
-    } else {
-      race.sendComplete();
-    }
+    race.sendComplete(!isSolved);
   }, [race.sendComplete]);
 
   // Spacebar handler

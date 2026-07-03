@@ -28,10 +28,23 @@ export class LeaderboardService {
         'user.league',
         'user.country',
       ])
+      // Only rank users who have actually played a game: every account ever
+      // created (sign-in-only visitors, test accounts) otherwise shows up at
+      // the default rating as a mystery entry.
+      .where((qb) => {
+        const sub = qb
+          .subQuery()
+          .select('1')
+          .from(UserPuzzleStats, 'played')
+          .where('played.userId = user.id')
+          .andWhere('played.gamesPlayed > 0')
+          .getQuery();
+        return `EXISTS ${sub}`;
+      })
       .orderBy('user.mmr', 'DESC');
 
     if (league) {
-      query = query.where('user.league = :league', { league });
+      query = query.andWhere('user.league = :league', { league });
     }
 
     const [users, total] = await query
@@ -92,6 +105,9 @@ export class LeaderboardService {
       .createQueryBuilder('stats')
       .leftJoinAndSelect('stats.user', 'user')
       .where('stats.puzzleSize = :puzzleSize', { puzzleSize })
+      // Stats rows are created on first lookup — only rank players who have
+      // actually played this puzzle.
+      .andWhere('stats.gamesPlayed > 0')
       .orderBy('stats.mmr', 'DESC');
 
     if (league) {
@@ -130,6 +146,7 @@ export class LeaderboardService {
       const count = await this.statsRepository
         .createQueryBuilder('stats')
         .where('stats.puzzleSize = :puzzleSize', { puzzleSize })
+        .andWhere('stats.gamesPlayed > 0')
         .andWhere('stats.mmr > :mmr', { mmr: userStats.mmr })
         .getCount();
 
@@ -138,9 +155,20 @@ export class LeaderboardService {
       const user = await this.userRepository.findOne({ where: { id: userId } });
       if (!user) return 0;
 
+      // Match the leaderboard filter: only players with at least one game.
       const count = await this.userRepository
         .createQueryBuilder('user')
-        .where('user.mmr > :mmr', { mmr: user.mmr })
+        .where((qb) => {
+          const sub = qb
+            .subQuery()
+            .select('1')
+            .from(UserPuzzleStats, 'played')
+            .where('played.userId = user.id')
+            .andWhere('played.gamesPlayed > 0')
+            .getQuery();
+          return `EXISTS ${sub}`;
+        })
+        .andWhere('user.mmr > :mmr', { mmr: user.mmr })
         .getCount();
 
       return count + 1;

@@ -269,7 +269,7 @@ export interface ServerEvents {
   };
   opponent_ready: Record<string, never>;
   opponent_done: {
-    timeMs: number;
+    timeMs: number | null; // null = the opponent DNF'd
   };
   solve_result: {
     round: number;

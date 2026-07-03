@@ -38,9 +38,19 @@ aws ecr get-login-password --region "$REGION" | docker login --username AWS --pa
 echo -e "${YELLOW}Building Docker image...${NC}"
 docker build -t "$ECR_URL:latest" -f "$PROJECT_ROOT/apps/api/Dockerfile" "$PROJECT_ROOT"
 
+# Also tag with the git SHA so every deploy is pinnable/rollbackable
+# (rollback: docker pull $ECR_URL:<sha>, tag it :latest, push, redeploy).
+GIT_SHA=$(git -C "$PROJECT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "unknown")
+if [ "$GIT_SHA" != "unknown" ]; then
+    docker tag "$ECR_URL:latest" "$ECR_URL:$GIT_SHA"
+fi
+
 # Push to ECR
 echo -e "${YELLOW}Pushing to ECR...${NC}"
 docker push "$ECR_URL:latest"
+if [ "$GIT_SHA" != "unknown" ]; then
+    docker push "$ECR_URL:$GIT_SHA"
+fi
 
 # Force new deployment
 echo -e "${YELLOW}Deploying to ECS...${NC}"

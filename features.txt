@@ -1,0 +1,42 @@
+plus2 — future features
+=======================
+
+Gameplay
+- Resign button in matches — a clean way to concede against someone without having
+  to abandon/forfeit by closing the tab or waiting out the 30s timer
+- Make ghost mode obsolete: fold it into "Find Race". If nobody is online to play
+  against, your race solves just become ghost recordings for other people to race —
+  no separate "create ghost solves" mode
+- Enable 2x2, 4x4, 5x5 (everything is wired for them; only 3x3 is AVAILABLE_SIZES today)
+- Official-quality scrambles via cubing.js / TNoodle (current generator is a simple random-move one; see comment in matches.service.ts)
+- Best-of settings for challenges (let the creator pick Bo1/Bo3/Bo5)
+- Rematch that directly rematches the same opponent (today "Rematch" just re-queues both players)
+- Penalties: +2 / DNF adjudication on space-stop instead of silently accepting
+
+Multiplayer / social
+- Spectator mode: let third parties watch a live match (rooms already exist server-side; move fan-out is point-to-point only)
+- Friends list + direct challenge to online friends (skip the copy/paste code)
+- Global "you're in a live match" banner with a Return button (the match keeps running if you navigate away; today there's no affordance to get back)
+- Global "in queue" indicator so queueing can persist across pages (currently leaving the dashboard leaves the queue by design)
+- Tournaments / brackets
+- In-match chat or quick emotes
+
+Progression / stats
+- Historical times on your profile: plot averages (ao5/ao12/ao100) against time so
+  you can see improvement
+- PvP match history on the dashboard (the "Recent Matches" card currently only shows ghost races)
+- Seasons with league resets + end-of-season rewards
+- Solve analytics: move count, TPS, splits per solve; graphs over time
+- Head-to-head records vs specific players
+
+Platform
+- Mobile / touch controls (swipe-to-turn or on-screen buttons)
+- Smart-cube (Bluetooth) support for physical cubes
+- Server-side move validation & anti-cheat (server currently trusts client-reported solve times; recompute from the recorded move timeline instead)
+- Redis-backed queue/challenge/match state for horizontal scaling (all in-memory today; the matchmaking service comment already flags this)
+- Observability: structured logs/metrics for match lifecycle (replace the [SYNC] console logs)
+
+Housekeeping
+- Set up ESLint properly (repo has lint scripts but no eslint configs anywhere)
+- Adopt the two-player socket test harness into the repo as a real CI test suite (currently lives outside the repo; see memory/session notes)
+- Clean up legacy fields in the game store (opponentSolveClientTs etc.) and stale event shapes

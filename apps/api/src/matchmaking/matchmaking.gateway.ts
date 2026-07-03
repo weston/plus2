@@ -68,6 +68,11 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       player2SolveStartedAt?: number;
       player1SolveTimeout?: NodeJS.Timeout;
       player2SolveTimeout?: NodeJS.Timeout;
+      // Set when a player deliberately left the match page (match_leave):
+      // a bare reconnect must NOT re-attach them / cancel their forfeit
+      // timer — only an explicit match_rejoin does.
+      player1Left?: boolean;
+      player2Left?: boolean;
       // Server-authoritative solve timeline (for deterministic replay)
       inspectionStartServerMs?: number;
       inspectionEndServerMs?: number;
@@ -216,20 +221,36 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         continue;
       }
 
-      // A plain reconnect (new tab, second device, background tab waking up)
-      // must NOT steal the match's event routing from a socket that is
-      // already attached — only an explicit match_rejoin (the match page
-      // mounting) takes over.
-      if (!opts.takeover && this.findOtherAttachedSocket(matchId, socket.userId, socket.id)) {
-        return false;
+      const isPlayer1 = matchState.player1Id === socket.userId;
+
+      if (!opts.takeover) {
+        // A plain reconnect (new tab, second device, background tab waking
+        // up) must NOT steal the match's event routing from a socket that is
+        // already attached — only an explicit match_rejoin (the match page
+        // mounting) takes over.
+        if (this.findOtherAttachedSocket(matchId, socket.userId, socket.id)) {
+          return false;
+        }
+        // A player who deliberately LEFT the match page stays detached on a
+        // bare reconnect (e.g. a network blip while on the dashboard) so the
+        // forfeit grace period keeps counting. Returning to the match page
+        // (match_rejoin, takeover=true) re-attaches and clears the flag.
+        if (isPlayer1 ? matchState.player1Left : matchState.player2Left) {
+          return false;
+        }
       }
 
       socket.matchId = matchId;
       socket.join(matchId);
+      if (isPlayer1) {
+        matchState.player1Left = undefined;
+      } else {
+        matchState.player2Left = undefined;
+      }
 
       // Enforce at most one attached socket per player per match: event
       // routing follows the attachment, so clear any stale attachment held
-      // by the user's other sockets.
+      // by the user's other sockets and tell those tabs the match moved.
       const socketsMap = this.server?.sockets as unknown as Map<string, Socket>;
       if (socketsMap) {
         for (const [, other] of socketsMap) {
@@ -237,12 +258,12 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
           if (o.userId === socket.userId && o.id !== socket.id && o.matchId === matchId) {
             o.matchId = undefined;
             other.leave(matchId);
+            other.emit('match_detached', { matchId });
           }
         }
       }
 
       // Cancel abandon timeout for this player
-      const isPlayer1 = matchState.player1Id === socket.userId;
       if (isPlayer1 && matchState.player1AbandonTimeout) {
         clearTimeout(matchState.player1AbandonTimeout);
         matchState.player1AbandonTimeout = undefined;
@@ -551,9 +572,11 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     if (isPlayer1) {
       if (match.player1AbandonTimeout) clearTimeout(match.player1AbandonTimeout);
       match.player1AbandonTimeout = abandonTimeout;
+      match.player1Left = true;
     } else {
       if (match.player2AbandonTimeout) clearTimeout(match.player2AbandonTimeout);
       match.player2AbandonTimeout = abandonTimeout;
+      match.player2Left = true;
     }
   }
 
@@ -700,12 +723,54 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       match.player2SolveTimeout = undefined;
     }
 
-    // Client sends their already-calculated time - we just pass it through
+    const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
+    const opponentSocket = this.findMatchSocket(opponentId, socket.matchId);
+
+    // A null time means the cube was NOT solved when the timer stopped — that
+    // is a DNF, not a completed solve. (Previously the server "helpfully"
+    // computed a time and marked it completed, so stopping on an unsolved
+    // cube could win rounds.)
+    if (data?.timeMs == null) {
+      const result = await this.matchesService.recordDNF(
+        socket.matchId,
+        match.currentRound,
+        socket.userId,
+      );
+      if (!result) return;
+
+      socket.emit('my_solve_time', { timeMs: null });
+      opponentSocket?.emit('opponent_done', { timeMs: null });
+
+      if (result.roundComplete) {
+        await this.handleRoundComplete(socket.matchId, match, result);
+      }
+      return;
+    }
+
+    // Validate the client-reported time against the server-observed solve
+    // window (solve start is server-authoritative, stamped at the first
+    // non-rotation move). A client can't be meaningfully FASTER than the
+    // server's own observation — clamp gross spoofs; leave slower times
+    // alone (network delay only ever inflates the server window).
+    let timeMs = data.timeMs;
+    const solveStartServerMs = isPlayer1
+      ? match.player1SolveStartServerMs
+      : match.player2SolveStartServerMs;
+    if (solveStartServerMs) {
+      const serverElapsedMs = Date.now() - solveStartServerMs;
+      if (timeMs < serverElapsedMs - 5000) {
+        console.warn(
+          `[ANTICHEAT] ${socket.userId} reported ${timeMs}ms but the server observed ~${serverElapsedMs}ms — clamping`,
+        );
+        timeMs = serverElapsedMs;
+      }
+    }
+
     const result = await this.matchesService.recordSolveComplete(
       socket.matchId,
       match.currentRound,
       socket.userId,
-      data?.timeMs, // Use client's time directly
+      timeMs,
     );
 
     if (!result) return;
@@ -714,8 +779,6 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     socket.emit('my_solve_time', { timeMs: result.timeMs });
 
     // Notify opponent of completion with the SAME time
-    const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
-    const opponentSocket = this.findMatchSocket(opponentId, socket.matchId);
     opponentSocket?.emit('opponent_done', { timeMs: result.timeMs });
 
     // Check if round is complete
@@ -990,12 +1053,26 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
         }))
       : [];
 
+    // Validate the client-reported time against the server-observed solve
+    // window — these times feed the ghost MMR economy, so gross spoofs are
+    // clamped to what the server actually saw.
+    let clientTimeMs = data?.timeMs;
+    if (clientTimeMs != null && session.solveStartedAt) {
+      const serverElapsedMs = Date.now() - session.solveStartedAt;
+      if (clientTimeMs < serverElapsedMs - 5000) {
+        console.warn(
+          `[ANTICHEAT] solo ${socket.userId} reported ${clientTimeMs}ms but the server observed ~${serverElapsedMs}ms — clamping`,
+        );
+        clientTimeMs = serverElapsedMs;
+      }
+    }
+
     const result = await this.soloService.recordSolveComplete(
       socket.soloSessionId,
       session.currentRound,
       data?.isDnf ?? false,
       moves,
-      data?.timeMs, // Pass client-calculated time
+      clientTimeMs,
     );
 
     if (!result) return;
@@ -1228,7 +1305,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   }
 
   @SubscribeMessage('ghost_race_complete')
-  async handleGhostRaceComplete(@ConnectedSocket() socket: AuthenticatedSocket) {
+  async handleGhostRaceComplete(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data?: { isDnf?: boolean },
+  ) {
     if (!socket.ghostRaceId || !socket.userId || !this.soloService) return;
 
     const race = this.activeGhostRaces.get(socket.ghostRaceId);
@@ -1248,8 +1328,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       race.inspectionTimer = undefined;
     }
 
-    // Calculate user's time
-    const userTime = race.solveStartedAt ? Date.now() - race.solveStartedAt : null;
+    // Calculate user's time (server-observed). Stopping on an UNSOLVED cube
+    // is a DNF — otherwise instantly stopping the timer would beat the ghost.
+    const userTime =
+      data?.isDnf || !race.solveStartedAt ? null : Date.now() - race.solveStartedAt;
     race.userTimes.push(userTime);
 
     const ghostTime = race.ghostTimes[race.currentRound - 1];
@@ -1971,13 +2053,27 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
           matchState.player1Id,
           full.puzzleSize,
           result.p1NewMmr,
-          solves.map((s) => ({ roundNumber: s.roundNumber, scramble: s.scramble, timeMs: s.p1TimeMs, moves: (s.p1Moves as any) || [] })),
+          solves.map((s) => ({
+            roundNumber: s.roundNumber,
+            scramble: s.scramble,
+            timeMs: s.p1TimeMs,
+            moves: (s.p1Moves as any) || [],
+            inspectionStartAt: s.p1InspectionStartAt,
+            solveStartAt: s.p1SolveStartAt,
+          })),
         );
         await this.soloService.recordGhost(
           matchState.player2Id,
           full.puzzleSize,
           result.p2NewMmr,
-          solves.map((s) => ({ roundNumber: s.roundNumber, scramble: s.scramble, timeMs: s.p2TimeMs, moves: (s.p2Moves as any) || [] })),
+          solves.map((s) => ({
+            roundNumber: s.roundNumber,
+            scramble: s.scramble,
+            timeMs: s.p2TimeMs,
+            moves: (s.p2Moves as any) || [],
+            inspectionStartAt: s.p2InspectionStartAt,
+            solveStartAt: s.p2SolveStartAt,
+          })),
         );
       } catch (e) {
         console.error('Ghost snapshot error:', e);
@@ -2033,6 +2129,13 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       player: dnfPlayer === 'p2' ? 'you' : 'opponent',
       reason: 'timeout',
     });
+
+    // Same events a normal completion sends, so both clients settle their
+    // timers/status ("DNF") instead of waiting on a phantom solve.
+    const dnfSocket = isPlayer1 ? p1Socket : p2Socket;
+    const otherSocket = isPlayer1 ? p2Socket : p1Socket;
+    dnfSocket?.emit('my_solve_time', { timeMs: null });
+    otherSocket?.emit('opponent_done', { timeMs: null });
 
     // Check if round is complete
     if (result.roundComplete) {
