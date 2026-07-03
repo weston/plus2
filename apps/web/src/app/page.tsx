@@ -212,7 +212,7 @@ export default function HomePage() {
             <span className="text-blue-500">head</span> to <span className="text-yellow-500">head</span>.
           </h1>
           <p className="text-lg text-gray-400 mb-8 max-w-md">
-            Like chess online, but your rating is measured in seconds.
+            Race live opponents. Climb the ranks.
           </p>
           <div className="flex flex-wrap gap-3 mb-6">
             <Link href={primaryCta.href} className="btn btn-primary text-lg px-7 py-3">
