@@ -161,7 +161,7 @@ export const TwistyCube = forwardRef<TwistyCubeHandle, TwistyCubeProps>(function
     let dragging = false;
     let lastX = 0;
     let lastY = 0;
-    const SENS = 0.05; // camera steps per pixel
+    const SENS = 0.09; // camera steps per pixel (~180° per 270px drag)
 
     const down = (e: PointerEvent) => {
       dragging = true;

@@ -207,12 +207,12 @@ export default function HomePage() {
       <section className="max-w-6xl mx-auto px-6 pt-10 pb-16 grid md:grid-cols-2 gap-10 items-center">
         <div>
           <h1 className="text-5xl md:text-6xl font-bold leading-tight mb-5">
-            Speedcubing,
+            Sim cubing,
             <br />
             <span className="text-blue-500">head</span> to <span className="text-yellow-500">head</span>.
           </h1>
           <p className="text-lg text-gray-400 mb-8 max-w-md">
-            Race live opponents. Climb the ranks.
+            Race live opponents on a virtual cube. Climb the ranks.
           </p>
           <div className="flex flex-wrap gap-3 mb-6">
             <Link href={primaryCta.href} className="btn btn-primary text-lg px-7 py-3">
@@ -223,7 +223,7 @@ export default function HomePage() {
             </Link>
           </div>
           <p className="text-sm text-gray-500">
-            Free · keyboard-driven
+            Free · keyboard-driven · no cube required
             {playerCount !== null && playerCount > 0 && (
               <> · {playerCount.toLocaleString()} ranked cuber{playerCount === 1 ? '' : 's'}</>
             )}
@@ -274,7 +274,7 @@ export default function HomePage() {
         <div className="max-w-6xl mx-auto px-6 py-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-gray-500">
           <span>
             <span className="text-blue-500 font-bold">Plus</span>
-            <span className="text-yellow-500 font-bold">2</span> — competitive cube racing
+            <span className="text-yellow-500 font-bold">2</span> — virtual cube racing
           </span>
           <div className="flex gap-5">
             <Link href="/leaderboard" className="hover:text-white">Leaderboard</Link>

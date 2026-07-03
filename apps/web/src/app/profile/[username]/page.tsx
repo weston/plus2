@@ -594,12 +594,7 @@ export default function ProfilePage() {
           return (
             <div className="card mb-6 border border-sky-500/30 bg-gradient-to-br from-sky-950/30 to-transparent">
               <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-xl font-bold">WCA Profile</h2>
-                  <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-semibold">
-                    Official
-                  </span>
-                </div>
+                <h2 className="text-xl font-bold">WCA Profile</h2>
                 <a
                   href={`https://www.worldcubeassociation.org/persons/${profile.wcaId}`}
                   target="_blank"

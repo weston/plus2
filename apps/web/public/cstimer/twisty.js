@@ -301,10 +301,11 @@ window.twistyjs = (function() {
 		}
 
 		function moveCameraDelta(deltaTheta, deltaPhi) {
-			cameraTheta += deltaTheta;
-			cameraTheta = Math.max(Math.min(cameraTheta, 6), -6);
+			// Yaw wraps (full 360° spin); pitch stops just shy of the poles so
+			// lookAt's fixed +Y up vector never degenerates.
+			cameraTheta = (cameraTheta + deltaTheta) % 48;
 			cameraPhi += deltaPhi;
-			cameraPhi = Math.max(Math.min(cameraPhi, 6), -6);
+			cameraPhi = Math.max(Math.min(cameraPhi, 11.9), -11.9);
 			moveCamera(cameraTheta, cameraPhi, true);
 		}
 

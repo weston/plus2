@@ -7,8 +7,8 @@ import { IncomingChallengeBanner } from '@/components/IncomingChallengeBanner';
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'Plus2 - Competitive Rubik\'s Cube Racing',
-  description: 'Race against players worldwide in real-time Rubik\'s cube solving competitions',
+  title: 'Plus2 - Virtual Rubik\'s Cube Racing',
+  description: 'Solve a virtual Rubik\'s cube from your keyboard and race live opponents in your browser. No physical cube needed.',
 };
 
 // Apply the saved theme before paint to avoid a flash of the default theme.
