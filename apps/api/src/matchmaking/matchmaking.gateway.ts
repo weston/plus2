@@ -14,6 +14,8 @@ import { forwardRef, Inject, Optional } from '@nestjs/common';
 import { MatchmakingService, QueueEntry, Challenge } from './matchmaking.service';
 import { MatchesService } from '../matches/matches.service';
 import { SoloService } from '../solo/solo.service';
+import { ChatService, CHAT_MAX_LENGTH } from '../chat/chat.service';
+import { UsersService } from '../users/users.service';
 import { PuzzleSize, PUZZLE_SIZES, INSPECTION_DURATION_MS, RANKED_HUMAN_WAIT_MS } from '@plus2/shared';
 
 interface AuthenticatedSocket extends Socket {
@@ -66,6 +68,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       player2AbandonTimeout?: NodeJS.Timeout;
       player1SolveStartedAt?: number;
       player2SolveStartedAt?: number;
+      // Monotonic twins — used for DURATION math (anti-cheat clamp); the
+      // wall-clock versions remain the shared replay timestamps.
+      player1SolveStartMono?: number;
+      player2SolveStartMono?: number;
       player1SolveTimeout?: NodeJS.Timeout;
       player2SolveTimeout?: NodeJS.Timeout;
       // Set when a player deliberately left the match page (match_leave):
@@ -84,6 +90,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
   // Matchmaking interval
   private matchmakingInterval: NodeJS.Timeout | null = null;
 
+  // Chat rate limiting: userId -> last accepted message timestamp
+  private chatLastSentAt = new Map<string, number>();
+  private readonly CHAT_MIN_INTERVAL_MS = 1500;
+
   // Active solo recording sessions (sessionId -> session state)
   private activeSoloSessions: Map<
     string,
@@ -94,6 +104,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       inspectionTimer?: NodeJS.Timeout;
       solveTimeout?: NodeJS.Timeout;
       solveStartedAt?: number;
+      solveStartedAtMono?: number; // monotonic — durations only
     }
   > = new Map();
 
@@ -126,6 +137,10 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       inspectionTimer?: NodeJS.Timeout;
       solveTimeout?: NodeJS.Timeout;
       solveStartedAt?: number;
+      // Monotonic twin of solveStartedAt: durations must never be computed
+      // from Date.now() — the wall clock can step (NTP/WSL2 sync) and yield
+      // negative or skewed solve times.
+      solveStartedAtMono?: number;
       nextRoundTimer?: NodeJS.Timeout;
       // The racer's own solves, recorded as they play so every race also
       // grows the ghost pool ("racing IS creating ghosts").
@@ -150,6 +165,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     @Optional()
     @Inject(forwardRef(() => SoloService))
     private soloService: SoloService,
+    @Inject(forwardRef(() => UsersService))
+    private usersService: UsersService,
+    private chatService: ChatService,
   ) {}
 
   afterInit() {
@@ -536,6 +554,112 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     }
   }
 
+  // ==========================================================================
+  // CHAT
+  // ==========================================================================
+
+  /**
+   * Join the global chat room. Anyone logged-in can read; only WCA-verified
+   * accounts (linked WCA id) can send — the reply says which, plus recent
+   * history so the room isn't empty on load.
+   */
+  @SubscribeMessage('chat_join')
+  async handleChatJoin(@ConnectedSocket() socket: AuthenticatedSocket) {
+    if (!socket.userId) return;
+    socket.join('global-chat');
+
+    const user = await this.usersService.findById(socket.userId).catch(() => null);
+    const messages = await this.chatService.getRecentMessages().catch(() => []);
+    socket.emit('chat_joined', {
+      canSend: !!user?.wcaId,
+      messages: messages.map((m) => ({
+        id: m.id,
+        userId: m.userId,
+        username: m.username,
+        country: m.country,
+        text: m.text,
+        ts: m.createdAt instanceof Date ? m.createdAt.getTime() : new Date(m.createdAt).getTime(),
+      })),
+    });
+  }
+
+  @SubscribeMessage('chat_leave')
+  handleChatLeave(@ConnectedSocket() socket: AuthenticatedSocket) {
+    socket.leave('global-chat');
+  }
+
+  @SubscribeMessage('chat_send')
+  async handleChatSend(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { text: string },
+  ) {
+    if (!socket.userId) return;
+
+    const text = (data?.text || '').trim().slice(0, CHAT_MAX_LENGTH);
+    if (!text) return;
+
+    const last = this.chatLastSentAt.get(socket.userId) || 0;
+    if (Date.now() - last < this.CHAT_MIN_INTERVAL_MS) {
+      socket.emit('error', { code: 'CHAT_RATE_LIMIT', message: 'You are sending messages too quickly' });
+      return;
+    }
+
+    const user = await this.usersService.findById(socket.userId).catch(() => null);
+    if (!user) return;
+    if (!user.wcaId) {
+      socket.emit('error', {
+        code: 'CHAT_NOT_VERIFIED',
+        message: 'Link your WCA account to chat',
+      });
+      return;
+    }
+
+    this.chatLastSentAt.set(socket.userId, Date.now());
+    const saved = await this.chatService.saveMessage(user.id, user.username, user.country || null, text);
+
+    this.server.to('global-chat').emit('chat_message', {
+      id: saved.id,
+      userId: user.id,
+      username: user.username,
+      country: user.country || null,
+      text,
+      ts: Date.now(),
+    });
+  }
+
+  /**
+   * In-match chat: only between the two live players of an active match,
+   * relayed to each player's attached socket (sender gets an echo too so the
+   * client renders from one source).
+   */
+  @SubscribeMessage('match_chat_send')
+  handleMatchChatSend(
+    @ConnectedSocket() socket: AuthenticatedSocket,
+    @MessageBody() data: { text: string },
+  ) {
+    if (!socket.userId || !socket.matchId) return;
+    const match = this.activeMatches.get(socket.matchId);
+    if (!match) return;
+
+    const text = (data?.text || '').trim().slice(0, CHAT_MAX_LENGTH);
+    if (!text) return;
+
+    const last = this.chatLastSentAt.get(socket.userId) || 0;
+    if (Date.now() - last < this.CHAT_MIN_INTERVAL_MS) return;
+    this.chatLastSentAt.set(socket.userId, Date.now());
+
+    const message = {
+      userId: socket.userId,
+      username: socket.username || 'player',
+      text,
+      ts: Date.now(),
+    };
+    const isPlayer1 = socket.userId === match.player1Id;
+    const opponentId = isPlayer1 ? match.player2Id : match.player1Id;
+    socket.emit('match_chat', message);
+    this.findMatchSocket(opponentId, socket.matchId)?.emit('match_chat', message);
+  }
+
   /**
    * The match page attaches itself to any live match on mount. With the
    * client's shared socket, returning to /match is no longer a fresh
@@ -661,6 +785,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       if (isPlayer1) {
         match.player1SolveStartedAt = serverTs;
         match.player1SolveStartServerMs = serverTs;
+        match.player1SolveStartMono = performance.now();
         match.player1SolveTimeout = setTimeout(
           () => this.handleSolveTimeout(matchIdForTimeout, userIdForTimeout),
           this.SOLVE_TIMEOUT_MS,
@@ -668,6 +793,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
       } else {
         match.player2SolveStartedAt = serverTs;
         match.player2SolveStartServerMs = serverTs;
+        match.player2SolveStartMono = performance.now();
         match.player2SolveTimeout = setTimeout(
           () => this.handleSolveTimeout(matchIdForTimeout, userIdForTimeout),
           this.SOLVE_TIMEOUT_MS,
@@ -780,11 +906,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // server's own observation — clamp gross spoofs; leave slower times
     // alone (network delay only ever inflates the server window).
     let timeMs = data.timeMs;
-    const solveStartServerMs = isPlayer1
-      ? match.player1SolveStartServerMs
-      : match.player2SolveStartServerMs;
-    if (solveStartServerMs) {
-      const serverElapsedMs = Date.now() - solveStartServerMs;
+    const solveStartMono = isPlayer1 ? match.player1SolveStartMono : match.player2SolveStartMono;
+    if (solveStartMono != null) {
+      const serverElapsedMs = performance.now() - solveStartMono;
       if (timeMs < serverElapsedMs - 5000) {
         console.warn(
           `[ANTICHEAT] ${socket.userId} reported ${timeMs}ms but the server observed ~${serverElapsedMs}ms — clamping`,
@@ -1027,6 +1151,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // Check if this is the first non-rotation move
     if (!isRotation && !session.solveStartedAt) {
       session.solveStartedAt = serverTs;
+      session.solveStartedAtMono = performance.now();
       // Set 10-minute timeout
       const sessionId = socket.soloSessionId;
       session.solveTimeout = setTimeout(
@@ -1084,8 +1209,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // window — these times feed the ghost MMR economy, so gross spoofs are
     // clamped to what the server actually saw.
     let clientTimeMs = data?.timeMs;
-    if (clientTimeMs != null && session.solveStartedAt) {
-      const serverElapsedMs = Date.now() - session.solveStartedAt;
+    if (clientTimeMs != null && session.solveStartedAtMono != null) {
+      const serverElapsedMs = performance.now() - session.solveStartedAtMono;
       if (clientTimeMs < serverElapsedMs - 5000) {
         console.warn(
           `[ANTICHEAT] solo ${socket.userId} reported ${clientTimeMs}ms but the server observed ~${serverElapsedMs}ms — clamping`,
@@ -1143,6 +1268,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     session.currentRound += 1;
     session.solveStartedAt = undefined;
+    session.solveStartedAtMono = undefined;
 
     // Clear any existing timeout
     if (session.solveTimeout) {
@@ -1326,6 +1452,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // Check if this is the first non-rotation move
     if (!isRotation && !race.solveStartedAt) {
       race.solveStartedAt = serverTs;
+      race.solveStartedAtMono = performance.now();
       // Set 10-minute timeout
       const raceId = socket.ghostRaceId;
       race.solveTimeout = setTimeout(
@@ -1372,7 +1499,9 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     // Calculate user's time (server-observed). Stopping on an UNSOLVED cube
     // is a DNF — otherwise instantly stopping the timer would beat the ghost.
     let userTime =
-      data?.isDnf || !race.solveStartedAt ? null : Date.now() - race.solveStartedAt;
+      data?.isDnf || race.solveStartedAtMono == null
+        ? null
+        : Math.round(performance.now() - race.solveStartedAtMono);
     // A non-positive time is a clock/ordering artifact, not a solve — treat
     // it as a DNF rather than scoring (or snapshotting) an impossible time.
     if (userTime !== null && userTime <= 0) {
@@ -1606,6 +1735,7 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
 
     race.currentRound += 1;
     race.solveStartedAt = undefined;
+    race.solveStartedAtMono = undefined;
 
     // Clear any existing timeout
     if (race.solveTimeout) {
@@ -1917,6 +2047,8 @@ export class MatchmakingGateway implements OnGatewayInit, OnGatewayConnection, O
     matchState.player2SolveStartedAt = undefined;
     matchState.player1SolveStartServerMs = undefined;
     matchState.player2SolveStartServerMs = undefined;
+    matchState.player1SolveStartMono = undefined;
+    matchState.player2SolveStartMono = undefined;
     // Clear any existing solve timeouts
     if (matchState.player1SolveTimeout) {
       clearTimeout(matchState.player1SolveTimeout);

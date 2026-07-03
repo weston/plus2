@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/stores/auth';
 import { useGameStore } from '@/stores/game';
+import { useChatStore } from '@/stores/chatroom';
 import { useSocket } from '@/hooks/useSocket';
 import { useKeybindings } from '@/hooks/useKeybindings';
 import { TwistyCube, TwistyCubeHandle } from '@/components/TwistyCube';
@@ -107,7 +108,24 @@ export default function MatchPage() {
     solveId,
   } = useGameStore();
 
-  const { sendMove, sendSolveComplete, sendRematch, sendRequeue, sendMatchRejoin, sendMatchLeave, sendResign } = useSocket();
+  const { sendMove, sendSolveComplete, sendRematch, sendRequeue, sendMatchRejoin, sendMatchLeave, sendResign, sendMatchChat } = useSocket();
+  const matchMessages = useChatStore((s) => s.matchMessages);
+  const [chatDraft, setChatDraft] = useState('');
+  const chatListRef = useRef<HTMLDivElement>(null);
+
+  // Keep the newest chat message in view.
+  useEffect(() => {
+    const el = chatListRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [matchMessages]);
+
+  const submitChat = (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = chatDraft.trim();
+    if (!text) return;
+    sendMatchChat(text);
+    setChatDraft('');
+  };
 
   // Two-step resign: first click arms the confirm, second click concedes.
   const [confirmResign, setConfirmResign] = useState(false);
@@ -262,9 +280,16 @@ export default function MatchPage() {
     sendSolveComplete(cubeSolved ? solveTime : null);
   }, [phase, myTimerRunning, isSolved, myTimerStart, sendSolveComplete]);
 
-  // Spacebar also completes the solve.
+  // Spacebar also completes the solve — but never while typing in the chat
+  // (or any other input), where Space is just a space.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
       if (e.code === 'Space') {
         e.preventDefault();
         void completeSolve();
@@ -416,6 +441,36 @@ export default function MatchPage() {
               </p>
             </div>
           </div>
+        </div>
+
+        {/* Match chat (live opponent) */}
+        <div className="card mb-4">
+          <div ref={chatListRef} className="max-h-32 overflow-y-auto space-y-1 pr-1 mb-2">
+            {matchMessages.length === 0 && (
+              <p className="text-gray-600 text-xs">Say gl hf…</p>
+            )}
+            {matchMessages.map((m, i) => (
+              <div key={i} className="text-sm leading-snug">
+                <span className={`font-medium mr-1.5 ${m.userId === user.id ? 'text-blue-400' : 'text-gray-200'}`}>
+                  {m.username}
+                </span>
+                <span className="text-gray-300 break-words">{m.text}</span>
+              </div>
+            ))}
+          </div>
+          <form onSubmit={submitChat} className="flex gap-2">
+            <input
+              type="text"
+              value={chatDraft}
+              onChange={(e) => setChatDraft(e.target.value)}
+              maxLength={280}
+              placeholder="Chat with your opponent…"
+              className="input flex-1 text-sm py-1.5"
+            />
+            <button type="submit" disabled={!chatDraft.trim()} className="btn btn-secondary px-3 text-sm disabled:opacity-50">
+              Send
+            </button>
+          </form>
         </div>
 
         {/* Round Result Overlay */}

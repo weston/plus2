@@ -5,6 +5,7 @@ import { io, Socket } from 'socket.io-client';
 import { useAuthStore } from '@/stores/auth';
 import { useGameStore } from '@/stores/game';
 import { useChallengeStore } from '@/stores/challenge';
+import { useChatStore, type ChatMsg } from '@/stores/chatroom';
 import type { PuzzleSize, ServerEvents } from '@plus2/shared';
 
 export type { ChallengeInfo } from '@/stores/challenge';
@@ -164,6 +165,7 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
     const challengeStore = useChallengeStore.getState();
     challengeStore.setChallenge(null);
     challengeStore.setError(null);
+    useChatStore.getState().resetMatchChat();
 
     useGameStore.getState().startMatch(
       data.matchId,
@@ -320,6 +322,21 @@ function registerHandlers(socket: Socket, shared: SharedSocket) {
   socket.on('challenge_cancelled', () => {
     useChallengeStore.getState().setChallenge(null);
   });
+
+  // Global chat (front page): joined confirmation carries recent history and
+  // whether this account may send (WCA-verified only).
+  socket.on('chat_joined', (data: { canSend: boolean; messages: ChatMsg[] }) => {
+    useChatStore.getState().setJoined(data.canSend, data.messages || []);
+  });
+
+  socket.on('chat_message', (data: ChatMsg) => {
+    useChatStore.getState().addMessage(data);
+  });
+
+  // In-match chat between the two live players.
+  socket.on('match_chat', (data: ChatMsg) => {
+    useChatStore.getState().addMatchMessage(data);
+  });
 }
 
 // React to login/logout/user-switch even when no socket-using page is mounted
@@ -434,6 +451,25 @@ export function useSocket() {
     ensureSocket()?.emit('challenge_join', { code: code.toUpperCase() });
   }, []);
 
+  // Global chat
+  const joinChat = useCallback(() => {
+    ensureSocket()?.emit('chat_join', {});
+  }, []);
+
+  const leaveChat = useCallback(() => {
+    ensureSocket()?.emit('chat_leave', {});
+    useChatStore.getState().leave();
+  }, []);
+
+  const sendChat = useCallback((text: string) => {
+    ensureSocket()?.emit('chat_send', { text });
+  }, []);
+
+  // In-match chat
+  const sendMatchChat = useCallback((text: string) => {
+    ensureSocket()?.emit('match_chat_send', { text });
+  }, []);
+
   return {
     socket: typeof window === 'undefined' ? null : g.__plus2GameSocket?.socket ?? null,
     joinQueue,
@@ -452,5 +488,10 @@ export function useSocket() {
     createChallenge,
     cancelChallenge,
     joinChallenge,
+    // Chat
+    joinChat,
+    leaveChat,
+    sendChat,
+    sendMatchChat,
   };
 }

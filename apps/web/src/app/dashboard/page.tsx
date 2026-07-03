@@ -5,7 +5,9 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/stores/auth';
 import { useGameStore } from '@/stores/game';
+import { useChatStore } from '@/stores/chatroom';
 import { useSocket } from '@/hooks/useSocket';
+import { CountryFlag } from '@/components/CountryFlag';
 import { LeagueBadge } from '@/components/LeagueBadge';
 import { usersApi, matchesApi, GhostRace } from '@/lib/api';
 import { RANKED_HUMAN_WAIT_MS } from '@plus2/shared';
@@ -21,6 +23,89 @@ interface Stats {
   gamesPlayed: number;
   gamesWon: number;
   bestTimeMs: number | null;
+}
+
+// Global chat room: everyone can read, WCA-verified accounts can send.
+function GlobalChat() {
+  const { joinChat, leaveChat, sendChat } = useSocket();
+  const { joined, canSend, messages } = useChatStore();
+  const { user } = useAuthStore();
+  const [draft, setDraft] = useState('');
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    joinChat();
+    return () => leaveChat();
+  }, [joinChat, leaveChat]);
+
+  // Keep the newest message in view.
+  useEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = draft.trim();
+    if (!text) return;
+    sendChat(text);
+    setDraft('');
+  };
+
+  const fmtTime = (ts: number) =>
+    new Date(ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+
+  return (
+    <div className="card mt-8">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-xl font-semibold">Global Chat</h3>
+        <span className="text-xs text-gray-500">WCA-verified accounts can chat</span>
+      </div>
+
+      <div ref={listRef} className="h-64 overflow-y-auto space-y-1.5 pr-1 mb-3">
+        {!joined && <p className="text-gray-500 text-sm">Connecting…</p>}
+        {joined && messages.length === 0 && (
+          <p className="text-gray-500 text-sm">No messages yet — say hi!</p>
+        )}
+        {messages.map((m, i) => (
+          <div key={m.id || i} className="text-sm leading-snug">
+            <span className="text-gray-500 text-xs mr-2">{fmtTime(m.ts)}</span>
+            {m.country && <CountryFlag country={m.country} size="sm" />}
+            <Link
+              href={`/profile/${m.username}`}
+              className={`font-medium mx-1 hover:underline ${m.userId === user?.id ? 'text-blue-400' : 'text-gray-200'}`}
+            >
+              {m.username}
+            </Link>
+            <span className="text-gray-300 break-words">{m.text}</span>
+          </div>
+        ))}
+      </div>
+
+      {canSend ? (
+        <form onSubmit={submit} className="flex gap-2">
+          <input
+            type="text"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            maxLength={280}
+            placeholder="Message the community…"
+            className="input flex-1 text-sm"
+          />
+          <button type="submit" disabled={!draft.trim()} className="btn btn-primary px-4 disabled:opacity-50">
+            Send
+          </button>
+        </form>
+      ) : (
+        <div className="text-sm text-gray-400 border border-gray-700 rounded-lg px-3 py-2">
+          <Link href="/settings" className="text-blue-400 hover:underline">
+            Link your WCA account
+          </Link>{' '}
+          to chat with the community.
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function DashboardPage() {
@@ -331,6 +416,9 @@ export default function DashboardPage() {
             <p className="text-gray-400">No matches yet. Play some ghost races to see them here!</p>
           )}
         </div>
+
+        {/* Global Chat */}
+        <GlobalChat />
       </div>
     </div>
   );
